@@ -4,4 +4,4 @@ Policy gradient (PG) based variational sequential optimal experimental design (v
 
 # Installation
 The code was tested in Python 3.9.7. GPU acceleration is highly recommended.
-Use 'venv' to install:
+Use `venv` to install:
