@@ -1,4 +1,4 @@
-import numpy as np
+import math
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -6,6 +6,7 @@ from .vsoed import VSOED
 from .utils import *
 import time
 from tqdm import trange
+import joblib
 
 class PGvsOED(VSOED):
     """
@@ -177,7 +178,7 @@ class PGvsOED(VSOED):
     get_design()
         Get a single design given a sequence of historical designs and 
         observations by running the actor network.
-    get_action_value()
+    get_action_values()
         Get the action value (Q-value) given historical designs, observations,
         and current design.
     train()
@@ -198,63 +199,75 @@ class PGvsOED(VSOED):
     Allow users to use gpu to accelerate the NN computation. It is not important
     in this version, because the NN is small and using cpu is fast enough.
     """
-    def __init__(self, model, 
+    def __init__(self, 
                  n_stage, n_param, n_design, n_obs, 
-                 prior, design_bounds, noise_info, 
-                 stage_reward_fun=None, terminal_reward_fun=None,
-                 phys_state_info=None, 
-                 post_approx=None, use_grid_kld=False, 
-                 n_grid=50, param_bounds=None, 
-                 use_PCE=False, n_contrastive_sample=10000, 
-                 post_rvs_method="MCMC", random_state=None,
-                 backend_dimns=None, actor_dimns=None, critic_dimns=None,
-                 activate=None,
-                 double_precision=False, device=torch.device('cpu')):
-        super().__init__(model, n_stage, n_param, n_design, n_obs, 
-                         prior, design_bounds, noise_info, 
-                         stage_reward_fun, terminal_reward_fun,
-                         phys_state_info, 
-                         post_approx, use_grid_kld, 
-                         n_grid, param_bounds, 
-                         post_rvs_method, random_state)
-        if random_state is None:
-            random_state = np.random.randint(1e6)
-        torch.manual_seed(random_state)
-
-        self.use_PCE = use_PCE
-        self.n_contrastive_sample = n_contrastive_sample
-
-        assert isinstance(double_precision, bool), (
-            "double_precision should either be True or False.")
-        if double_precision:
-            self.dtype = torch.float64
-        else:
-            self.dtype = torch.float32
-        self.device = device
+                 model, prior, design_bounds, 
+                 nkld_reward_fun=None, kld_reward_fun=None, 
+                 phys_state_info=None, post_approx=None, 
+                 encoder_dimns=None, backend_dimns=None,
+                 actor_dimns=None, critic_dimns=None, activate=None,
+                 random_state=None):
+        super().__init__(n_stage, n_param, n_design, n_obs, 
+                         model, prior, design_bounds,
+                         nkld_reward_fun, kld_reward_fun,
+                         phys_state_info, post_approx, random_state)
 
         if activate is None:
             activate = nn.ReLU
         self.activate = activate
 
+        assert encoder_dimns is None or backend_dimns is None
         # Initialize the actor (policy) network and critic network.
-        self.backend_input_dimn = (self.n_stage + (self.n_stage - 1) * (self.n_obs + self.n_design))
-        if backend_dimns is None:
-            self.backend_net = None
-            backend_output_dimn = self.backend_input_dimn
+        if encoder_dimns is not None:
+            self.use_encoder = True 
+            self.encoder_input_dimn = self.n_design + self.n_obs + self.n_xp
+            encoder_output_dimn = encoder_dimns[-1]
+            self.encoder_dimns = encoder_dimns
+            self.actor_input_dimn = encoder_output_dimn + self.n_xp
+            self.critic_input_dimn = encoder_output_dimn + self.n_xp + self.n_design
         else:
-            backend_output_dimn = backend_dimns[-1]
-        self.backend_dimns = backend_dimns
-        self.actor_input_dimn = backend_output_dimn
-        self.critic_input_dimn = backend_output_dimn + self.n_design
+            self.use_encoder = False
+            self.backend_input_dimn = (self.n_stage + (self.n_stage - 1) * (self.n_obs + self.n_design))
+            if backend_dimns is None:
+                self.backend_net = None
+                backend_output_dimn = self.backend_input_dimn
+            else:
+                backend_output_dimn = backend_dimns[-1]
+            self.backend_dimns = backend_dimns
+            self.actor_input_dimn = backend_output_dimn
+            self.critic_input_dimn = backend_output_dimn + self.n_design
+        if actor_dimns is None:
+            actor_dimns = [256, 256, 256]
+        if critic_dimns is None:
+            critic_dimns = [256, 256, 256]
         self.actor_dimns = actor_dimns
         self.critic_dimns = critic_dimns
         self.initialize()
 
-        self.initialize_policy = self.initialize_actor
-        self.load_policy = self.load_actor
-        self.get_policy = self.get_actor
+
+        # self.initialize_policy = self.initialize_actor
+        # self.load_policy = self.load_actor
+        # self.get_policy = self.get_actor
+
+        self.actor = partial(self.get_designs, return_all_stages=False, use_target=False)
+        self.actors = partial(self.get_designs, return_all_stages=True, use_target=False)
+        self.actor_target = partial(self.get_designs, return_all_stages=False, use_target=True)
+        self.actors_target = partial(self.get_designs, return_all_stages=True, use_target=True)
+        self.critic = partial(self.get_action_values, return_all_stages=False, use_target=False)
+        self.critics = partial(self.get_action_values, return_all_stages=True, use_target=False)
+        self.critic_target = partial(self.get_action_values, return_all_stages=False, use_target=True)
+        self.critics_target = partial(self.get_action_values, return_all_stages=True, use_target=True)
+
 
     def initialize(self):
+        if self.use_encoder:
+            encoder_dimns = [self.encoder_input_dimn] + list(self.encoder_dimns)
+            self.encoder_actor_net = initialize_encoder(encoder_dimns, self.activate)
+            self.encoder_critic_net = initialize_encoder(encoder_dimns, self.activate)
+            self.encoder_actor_optimizer = None
+            self.encoder_actor_lr_scheduler = None
+            self.encoder_critic_optimizer = None
+            self.encoder_critic_lr_scheduler = None
         self.initialize_backend(self.backend_dimns)
         self.initialize_actor(self.actor_dimns)
         self.initialize_critic(self.critic_dimns)
@@ -263,15 +276,16 @@ class PGvsOED(VSOED):
             self.post_approx.reset()
         except:
             pass
+        self.update = 0
 
     def initialize_backend(self, backend_dimns):
         if backend_dimns is not None:
-            self.backend_dimns = np.copy(backend_dimns)
-            backend_dimns = np.append(self.backend_input_dimn, backend_dimns)
+            self.backend_dimns = backend_dimns.copy()
+            backend_dimns = [self.backend_input_dimn] + list(backend_dimns)
             self.backend_net = Net(backend_dimns, nn.ReLU(), 
-                None, 'backend', self.device).to(self.device, self.dtype)
+                None, 'backend')
             self.backend_target_net = Net(backend_dimns, nn.ReLU(), 
-                None, 'backend', self.device).to(self.device, self.dtype)
+                None, 'backend')
             self.backend_target_net.load_state_dict(self.backend_net.state_dict())
             self.update = 0
         else:
@@ -287,20 +301,17 @@ class PGvsOED(VSOED):
         actor_dimns : list, tuple or numpy.ndarray, optional(default=None)
             The dimensions of hidden layers of actor (policy) network.
         """
-        NoneType = type(None)
-        assert isinstance(actor_dimns, (list, tuple, np.ndarray, NoneType)), (
-               "actor_dimns should be a list, tuple or numpy.ndarray of "
+        assert isinstance(actor_dimns, (list, tuple)), (
+               "actor_dimns should be a list or tuple of "
                "integers.")
         output_dimn = self.n_design
-        if actor_dimns is None:
-            actor_dimns = (self.actor_input_dimn * 10,  self.actor_input_dimn * 10)
-        self.actor_dimns = np.copy(actor_dimns)
-        actor_dimns = np.append(np.append(self.actor_input_dimn,  actor_dimns), output_dimn)
+        self.actor_dimns = actor_dimns.copy()
+        actor_dimns = [self.actor_input_dimn] + list(actor_dimns) + [output_dimn]
         
-        self.actor_net = Net(actor_dimns, nn.ReLU(), self.design_bounds, 
-            'actor', self.device, self.backend_net).to(self.device, self.dtype)
-        self.actor_target_net = Net(actor_dimns, nn.ReLU(), self.design_bounds, 
-            'actor', self.device, self.backend_target_net).to(self.device, self.dtype)
+        self.actor_net = Net(actor_dimns, self.activate, self.design_bounds, 
+            'actor', self.backend_net)
+        self.actor_target_net = Net(actor_dimns, self.activate, self.design_bounds, 
+            'actor', self.backend_target_net)
         self.actor_target_net.load_state_dict(self.actor_net.state_dict())
         self.update = 0
         self.actor_optimizer = None
@@ -316,77 +327,73 @@ class PGvsOED(VSOED):
             The dimensions of hidden layers of critic (actor value function) 
             network.
         """
-        NoneType = type(None)
-        assert isinstance(critic_dimns, (list, tuple, np.ndarray, NoneType)), (
-               "critic_dimns should be a list, tuple or numpy.ndarray of ",
+        assert isinstance(critic_dimns, (list, tuple)), (
+               "critic_dimns should be a list or tuple of ",
                "integers.")
         output_dimn = 1
-        if critic_dimns is None:
-            critic_dimns = (self.critic_input_dimn * 10,  self.critic_input_dimn * 10)
-        self.critic_dimns = np.copy(critic_dimns)
-        critic_dimns = np.append(np.append(self.critic_input_dimn, critic_dimns), 
-                                 output_dimn)
-        self.critic_net = Net(critic_dimns, nn.ReLU(), 
-            np.array([[-np.inf, np.inf]]), 'critic', self.device, self.backend_net, self.n_design).to(self.device, self.dtype)
-        self.critic_target_net = Net(critic_dimns, nn.ReLU(), 
-            np.array([[-np.inf, np.inf]]), 'critic', self.device, self.backend_target_net, self.n_design).to(self.device, self.dtype)
+        self.critic_dimns = critic_dimns.copy()
+        critic_dimns = [self.critic_input_dimn] + list(critic_dimns) + [output_dimn]
+        self.critic_net = Net(critic_dimns, self.activate, 
+            np.array([[-np.inf, np.inf]]), 'critic', self.backend_net, self.n_design)
+        self.critic_target_net = Net(critic_dimns, self.activate, 
+            np.array([[-np.inf, np.inf]]), 'critic', self.backend_target_net, self.n_design)
         self.critic_target_net.load_state_dict(self.critic_net.state_dict())
         self.update = 0
         self.critic_optimizer = None  
         self.critic_lr_scheduler = None   
 
-    def load_actor(self, net, optimizer=None):
-        """
-        Load the actor network with single precision.
+    # def load_actor(self, net, optimizer=None):
+    #     """
+    #     Load the actor network with single precision.
 
-        Parameters
-        ----------
-        net : nn.Module
-            A pre-trained PyTorch network with input dimension actor_input_dimn 
-            and output dimension n_design.
-        optimizer : algorithm of torch.optim
-            An optimizer corresponding to net.
-        """
-        try:
-            net = net.to(self.device, self.dtype)
-            output = net(torch.zeros(1, self.actor_input_dimn).to(self.device, self.dtype))
-            assert output.shape[1] == self.n_design, (
-                   "Output dimension should be {}.".format(self.n_design))
-            self.actor_net = net
-        except:
-            print("Actor network should has "
-                  "input dimension {}.".format(self.actor_input_dimn))
-        self.actor_optimizer = optimizer
-        self.update = 0
+    #     Parameters
+    #     ----------
+    #     net : nn.Module
+    #         A pre-trained PyTorch network with input dimension actor_input_dimn 
+    #         and output dimension n_design.
+    #     optimizer : algorithm of torch.optim
+    #         An optimizer corresponding to net.
+    #     """
+    #     try:
+    #         net = net.to(self.device, self.dtype)
+    #         output = net(torch.zeros(1, self.actor_input_dimn).to(self.device, self.dtype))
+    #         assert output.shape[1] == self.n_design, (
+    #                "Output dimension should be {}.".format(self.n_design))
+    #         self.actor_net = net
+    #     except:
+    #         print("Actor network should has "
+    #               "input dimension {}.".format(self.actor_input_dimn))
+    #     self.actor_optimizer = optimizer
+    #     self.update = 0
 
-    def load_critic(self, net, optimizer=None):
-        """
-        Load the critic network with single precision.
+    # def load_critic(self, net, optimizer=None):
+    #     """
+    #     Load the critic network with single precision.
 
-        Parameters
-        ----------
-        net : nn.Module
-            A pre-trained PyTorch network with input dimension critic_input_dimn
-            and output dimension 1.
-        optimizer : algorithm of torch.optim
-            An optimizer corresponding to net.
-        """
-        try:
-            net = net.to(self.device, self.dtype)
-            output = net(torch.zeros(1, self.critic_input_dimn).to(self.device, self.dtype))
-            assert output.shape[1] == 1, (
-                   "Output dimension should be 1.")
-            self.critic_net = net
-        except:
-            print("Critic network should has input dimension {}.".format(self.critic_input_dimn))
-        self.critic_optimizer = optimizer
-        self.update = 0
+    #     Parameters
+    #     ----------
+    #     net : nn.Module
+    #         A pre-trained PyTorch network with input dimension critic_input_dimn
+    #         and output dimension 1.
+    #     optimizer : algorithm of torch.optim
+    #         An optimizer corresponding to net.
+    #     """
+    #     try:
+    #         net = net.to(self.device, self.dtype)
+    #         output = net(torch.zeros(1, self.critic_input_dimn).to(self.device, self.dtype))
+    #         assert output.shape[1] == 1, (
+    #                "Output dimension should be 1.")
+    #         self.critic_net = net
+    #     except:
+    #         print("Critic network should has input dimension {}.".format(self.critic_input_dimn))
+    #     self.critic_optimizer = optimizer
+    #     self.update = 0
 
-    def get_actor(self):
-        return self.actor_net
+    # def get_actor(self):
+    #     return self.actor_net
 
-    def get_critic(self):
-        return self.critic_net
+    # def get_critic(self):
+    #     return self.critic_net
 
     def form_actor_input(self, stage, ds_hist, ys_hist):
         """
@@ -407,18 +414,17 @@ class PGvsOED(VSOED):
         """
         n_traj = max(len(ds_hist), len(ys_hist))
         # Inputs.
-        X = np.zeros((n_traj, self.backend_input_dimn))
+        X = torch.zeros(n_traj, self.backend_input_dimn)
         # Index of experiments.
         X[:, stage] = 1
         # Historical designs.
         begin = self.n_stage
-        end = begin + np.prod(ds_hist.shape[1:])
+        end = begin + ds_hist.shape[1:].numel()
         X[:, begin:end] = ds_hist.reshape(len(ds_hist), end - begin)
         # Historical observations.
         begin = self.n_stage + (self.n_stage - 1) * self.n_design
-        end = begin + np.prod(ys_hist.shape[1:])
+        end = begin + ys_hist.shape[1:].numel()
         X[:, begin:end] = ys_hist.reshape(len(ys_hist), end - begin)
-        X = torch.from_numpy(X).to(self.device, self.dtype)
         return X
 
     def form_critic_input(self, stage, ds_hist, ys_hist, ds):
@@ -441,12 +447,13 @@ class PGvsOED(VSOED):
         A torch.Tensor of size (n_traj, critic_input_dimn).
         """
         n_traj = max(len(ds_hist), len(ys_hist))
-        X = torch.zeros(n_traj, self.backend_input_dimn + self.n_design).to(self.device, self.dtype)
-        X[:, :self.backend_input_dimn] = self.form_actor_input(stage,  ds_hist,   ys_hist)
-        X[:, -self.n_design:] = torch.from_numpy(ds).to(self.device, self.dtype)
+        X = torch.zeros(n_traj, self.backend_input_dimn + self.n_design)
+        X[:, :self.backend_input_dimn] = self.form_actor_input(stage, ds_hist, ys_hist)
+        X[:, -self.n_design:] = ds
         return X
 
-    def get_designs(self, stage=0, ds_hist=None, ys_hist=None, use_target=False):
+    def get_designs(self, stage, ds_hist, ys_hist, xps_hist, 
+        return_all_stages=False, use_target=False):
         """
         A function to get designs by running the policy network.
 
@@ -465,45 +472,23 @@ class PGvsOED(VSOED):
         -------
         A numpy.ndarry of size (n_traj, n_design) which are designs.
         """
-        if ds_hist is None:
-            ds_hist = np.empty((1, 0, self.n_design))
-        if ys_hist is None:
-            ys_hist = np.empty((1, 0, self.n_obs))
-        assert ds_hist.shape[1] == stage and ys_hist.shape[1] == stage
-        X = self.form_actor_input(stage, ds_hist, ys_hist)
-        if not use_target:
-            designs = self.actor_net(X).detach().cpu().double().numpy()
+        if not self.use_encoder:
+            assert ds_hist.shape[1] == stage and ys_hist.shape[1] == stage
+            X = self.form_actor_input(stage, ds_hist, ys_hist)
+            if not use_target:
+                designs = self.actor_net(X).detach()
+            else:
+                designs = self.actor_target_net(X).detach()
         else:
-            designs = self.actor_target_net(X).detach().cpu().double().numpy()
-
+            states = get_encoded_states(self.encoder_actor_net, ds_hist, ys_hist, xps_hist, return_all_stages)
+            if use_target:
+                designs = self.actor_target_net(states)
+            else:
+                designs = self.actor_net(states)
         return designs
 
-    def get_design(self, stage=0, d_hist=None, y_hist=None):
-        """
-        A function to get a single design by running the policy network.
-
-        Parameters
-        ----------
-        stage : int, optional(default=0)
-            The stage index. 0 <= stage <= n_stage - 1.
-        d_hist : numpy.ndarray of size (stage, n_design),
-                 optional(default=None)
-            A sequence of designs before stage "stage".
-        y_hist : numpy.ndarray of size (stage, n_obs), 
-                 optional(default=None)
-            A sequence of observations before stage "stage". 
-
-        Returns
-        -------
-        A numpy.ndarry of size (n_design) which is the design.
-        """
-        if d_hist is None:
-            d_hist = np.empty((0, self.n_design))
-        if y_hist is None:
-            y_hist = np.empty((0, self.n_obs))
-        return self.get_designs(stage,  d_hist.reshape(1, -1, self.n_design), y_hist.reshape(1, -1, self.n_obs)).reshape(-1)
-
-    def get_action_value(self, stage, ds_hist, ys_hist, ds, use_target=False):
+    def get_action_values(self, stage, ds_hist, ys_hist, xps_hist, ds, 
+        return_all_stages=False, use_target=False, state_no_grad=False):
         """
         A function to get the Q-value by running the critic network.
 
@@ -522,33 +507,62 @@ class PGvsOED(VSOED):
         -------
         A numpy.ndarry of size (n_traj) which are Q values.
         """
-        assert ds_hist.shape[1] == stage and ys_hist.shape[1] == stage
-        X = self.form_critic_input(stage, ds_hist, ys_hist, ds)
-        if not use_target:
-            values = self.critic_net(X).detach().cpu().double().numpy()
+        if not self.use_encoder:
+            assert ds_hist.shape[1] == stage and ys_hist.shape[1] == stage
+            X = self.form_critic_input(stage, ds_hist, ys_hist, ds)
+            if not use_target:
+                values = self.critic_net(X).detach()
+            else:
+                values = self.critic_target_net(X).detach()
         else:
-            values = self.critic_target_net(X).detach().cpu().double().numpy()
+            if return_all_stages:
+                assert ds.shape[1] == xps_hist.shape[1]
+            else:
+                assert len(ds.shape) == 2
+            states = get_encoded_states(self.encoder_critic_net, ds_hist, ys_hist, xps_hist, return_all_stages)
+            if state_no_grad:
+                states = states.detach()
+            X = torch.cat([states, ds], dim=-1)
+            if use_target:
+                values = self.critic_target_net(X)
+            else:
+                values = self.critic_net(X)
         return values[..., 0]
 
-    def train(self, n_update=100, n_buffer=20000, n_traj=1000, n_batch=1000,
+
+
+    def train(self, 
+              n_update=int(1e4), 
+              n_newtraj=1000, 
+              n_batch=10000,
+              n_buffer_init=20000,
+              n_buffer_max=int(1e5), 
+              buffer_device=torch.device('cpu'),
               discount=1,
+              encoder_actor_optimizer=None,
+              encoder_actor_lr_scheduler=None,
+              encoder_critic_optimizer=None,
+              encoder_critic_lr_scheduler=None,
               actor_optimizer=None,
               actor_lr_scheduler=None,
-              n_critic_update=30,
+              n_critic_update=5,
               critic_optimizer=None,
               critic_lr_scheduler=None,
-              n_post_approx_update=50,
+              n_post_approx_update=5,
               lr_target=0.05,
               design_noise_scale=None, 
-              design_noise_decay=0.99,
+              design_noise_decay=0.9999,
               on_policy=False,
               use_PCE=None,
               use_PCE_incre=None,
-              use_grid_kld=None,
+              n_contrastive_sample=10000,
               transition=5000,
               frozen=-1,
-              grad_clip=np.inf,
-              verbose=1):
+              log_every=1,
+              dowel=None,
+              save_every=1000,
+              save_path=None,
+              restart=False):
         """
         A function to run policy gradient for given number of updates to find
         the optimal policy.
@@ -609,283 +623,258 @@ class PGvsOED(VSOED):
             self.use_grid_kld temporarily, self.use_grid_kld will be changed to 
             use_grid_kld permanently if it is specified in this function.
         """
-        assert n_buffer >= n_traj
+        t0 = time.time()
+        assert n_update >= self.update
+        assert n_buffer >= n_newtraj
         assert n_buffer >= n_batch
-        self.n_buffer = n_buffer
-        self.n_traj = n_traj
-        self.n_batch = n_batch
+        self.n_update = n_update
+        if self.update == 0 or restart:
+            self.n_newtraj = n_newtraj
+            self.n_batch = n_batch
+            self.n_buffer_init = n_buffer_init
+            self.n_buffer_max = n_buffer_max
+            self.buffer_device = buffer_device
+            self.discount = discount
+            self.n_critic_update = n_critic_update
+            self.n_post_approx_update = n_post_approx_update
+            self.lr_target = lr_target
+            if design_noise_scale is None:
+                self.design_noise_scale = (self.design_bounds[:, 1] -  self.design_bounds[:, 0]) / 20                
+                self.design_noise_scale[self.design_noise_scale == float('inf')] = 5
+            elif isinstance(design_noise_scale, (list, tuple)):
+                self.design_noise_scale = torch.tensor(design_noise_scale)
+            else:
+                self.design_noise_scale = design_noise_scale
+            assert design_noise_decay > 0 and design_noise_decay <= 1
+            self.design_noise_decay = design_noise_decay
+            if isinstance(use_PCE, bool):
+                self.use_PCE = use_PCE
+                if isinstance(use_PCE_incre, bool):
+                    self.use_PCE_incre = use_PCE_incre
+                else:
+                    self.use_PCE_incre = False
+            else:
+                self.use_PCE = self.use_PCE_incre = False
+            self.n_contrastive_sample = n_contrastive_sample
+            self.transition = transition
+            self.frozen = frozen
+            self.log_every = log_every
+            self.dowel = dowel
+            self.save_every = save_every
+            self.save_path = save_path
+
+        if self.use_encoder:
+            if self.encoder_actor_optimizer is None:
+                self.encoder_actor_optimizer = encoder_actor_optimizer
+            if self.encoder_actor_lr_scheduler is None:
+                self.encoder_actor_lr_scheduler = encoder_actor_lr_scheduler
+            if self.encoder_critic_optimizer is None:
+                self.encoder_critic_optimizer = encoder_critic_optimizer
+            if self.encoder_critic_lr_scheduler is None:
+                self.encoder_critic_lr_scheduler = encoder_critic_lr_scheduler
         if actor_optimizer is None:
             if self.actor_optimizer is None:
-                self.actor_optimizer = optim.SGD(self.actor_net.parameters(), lr=0.1)
+                self.actor_optimizer = optim.Adam(self.actor_net.parameters(), lr=3e-4)
         else:
             self.actor_optimizer = actor_optimizer
         if actor_lr_scheduler is None:
             if self.actor_lr_scheduler is None:
                 self.actor_lr_scheduler = optim.lr_scheduler.ExponentialLR(
-                    self.actor_optimizer, gamma=0.99)
+                    self.actor_optimizer, gamma=0.9999)
         else:
             self.actor_lr_scheduler = actor_lr_scheduler
         if critic_optimizer is None:
             if self.critic_optimizer is None:
-                self.critic_optimizer = optim.SGD(self.critic_net.parameters(), lr=0.01)
+                self.critic_optimizer = optim.Adam(self.critic_net.parameters(), lr=3e-4)
         else:
             self.critic_optimizer = critic_optimizer
         if critic_lr_scheduler is None:
             if self.critic_lr_scheduler is None:
                 self.critic_lr_scheduler = optim.lr_scheduler.ExponentialLR(
-                    self.critic_optimizer, gamma=1)
+                    self.critic_optimizer, gamma=0.9999)
         else:
             self.critic_lr_scheduler = critic_lr_scheduler
-            
-        self.lr_target = lr_target
-
-        if self.update == 0:
-            if design_noise_scale is None:
-                if self.design_noise_scale is None:
-                    self.design_noise_scale = (self.design_bounds[:, 1] -  self.design_bounds[:, 0]) / 20                
-                    self.design_noise_scale[self.design_noise_scale == np.inf] = 5
-                    
-            elif isinstance(design_noise_scale, (list, tuple)):
-                self.design_noise_scale = np.array(design_noise_scale)
-            else:
-                self.design_noise_scale = design_noise_scale
-            self.design_noise_scale_init = np.copy(self.design_noise_scale)
-        else:
-            if design_noise_scale is not None and design_noise_scale != self.design_noise_scale_init:
-                self.design_noise_scale = design_noise_scale
-                self.design_noise_scale_init = np.copy(self.design_noise_scale)
-            
-            
-        assert design_noise_decay > 0 and design_noise_decay <= 1
-
-        if isinstance(use_PCE, bool):
-            self.use_PCE = use_PCE
-            if isinstance(use_PCE_incre, bool):
-                self.use_PCE_incre = use_PCE_incre
-        if isinstance(use_grid_kld, bool):
-            self.use_grid_kld = use_grid_kld
 
         # Initialize replay buffer
-        if self.update == 0:
-            self.asses(n_batch * 2, self.design_noise_scale)
-            self.buffer_thetas = torch.from_numpy(self.thetas).to(self.device, self.dtype)
-            self.buffer_dcs_hist = torch.from_numpy(self.dcs_hist).to(self.device, self.dtype)
-            self.buffer_ds_hist = torch.from_numpy(self.ds_hist).to(self.device, self.dtype)
-            self.buffer_ys_hist = torch.from_numpy(self.ys_hist).to(self.device, self.dtype)
-            if self.xbs is not None:
-                self.buffer_xbs = torch.from_numpy(self.xbs).to(self.device, self.dtype)
-            self.buffer_xps_hist = torch.from_numpy(self.xps_hist).to(self.device, self.dtype)
-            self.buffer_rewards_hist = torch.from_numpy(self.rewards_hist).to(self.device, self.dtype)
-            self.update_hist = []
+        buffer = {}
+        self.asses(self.n_buffer_init, self.design_noise_scale, True, self.use_PCE, self.use_PCE_incre, self.n_contrastive_sample)
+        buffer['thetas'] = self.thetas.to(self.buffer_device)
+        buffer['ds_hist'] = self.ds_hist.to(self.buffer_device)
+        buffer['ys_hist'] = self.ys_hist.to(self.buffer_device)
+        buffer['xps_hist'] = self.xps_hist.to(self.buffer_device)
+        if self.use_PCE:
+            buffer['rewards_hist'] = self.rewards_hist.to(self.buffer_device)
+        self.update_hist = []
+        p_max = torch.arange(1, self.n_buffer_max + 1).to(torch.float32)
+        p = []
+
+        critic_loss_fun = nn.MSELoss()
             
-
-
-        for l in range(n_update):
+        while self.update < self.n_update:
             t1 = time.time()
-            self.asses(n_traj, self.design_noise_scale)
-            if self.update % verbose == 0:
-                print('Update Level', self.update)
-                print("Averaged total reward:  {:.4}".format(self.averaged_reward))
-
-               # print(dcs_hist.shape, dcs_hist.mean(axis=(0, -1)).shape)
-
-                print("Averaged designs:", self.dcs_hist.mean(axis=(0, 1)))
-                # print("Averaged designs:", dcs_hist.mean(axis=(0)))
+            self.asses(self.n_newtraj, self.design_noise_scale, True, self.use_PCE, self.use_PCE_incre, self.n_contrastive_sample)
+            self.dowel.logger.push_prefix(f'epoch #{self.update} | ')
+            self.dowel.tabular.clear()
+            rewards = self.rewards_hist.sum(-1)
+            self.dowel.tabular.record('Epoch', self.update)
+            self.dowel.tabular.record('Reward/MeanReward', rewards.mean().item())
+            self.dowel.tabular.record('Reward/StdReward', rewards.std().item())
+            self.dowel.tabular.record('Design/MeanDesign', self.dcs_hist.mean(dim=(0, 1)).tolist())
+            self.dowel.tabular.record('Design/StdDesign', self.dcs_hist.std(dim=(0, 1)).tolist())
+            self.dowel.tabular.record('ReplayBuffer/buffer_size', len(buffer['thetas']))
+            log(self.dowel.tabular, self.dowel, self.update, self.log_every)
             self.update_hist.append(self.averaged_reward)   
-            ############################################
-            # self.post_approx.train(self.ds_hist, self.ys_hist, self.thetas, None, n_post_approx_update)
-            # self.rewards_hist[:, -1] = self.get_rewards(self.n_stage,
-            #                                             None,
-            #                                             self.xps_hist[:, -1],
-            #                                             self.ds_hist,
-            #                                             self.ys_hist,
-            #                                             self.thetas)
-            ############################################
             # Update the replay buffer
-            l_buffer = len(self.buffer_thetas)
-            # idxs_left = np.random.choice(l_buffer, min(l_buffer, n_buffer - n_traj), replace=False)
-            idxs_left = -min(l_buffer, n_buffer - n_traj)
-            self.buffer_thetas = torch.cat([self.buffer_thetas[idxs_left:], torch.from_numpy(self.thetas).to(self.device, self.dtype)], 0)
-            self.buffer_dcs_hist = torch.cat([self.buffer_dcs_hist[idxs_left:], torch.from_numpy(self.dcs_hist).to(self.device, self.dtype)], 0)
-            self.buffer_ds_hist = torch.cat([self.buffer_ds_hist[idxs_left:], torch.from_numpy(self.ds_hist).to(self.device, self.dtype)], 0)
-            self.buffer_ys_hist = torch.cat([self.buffer_ys_hist[idxs_left:], torch.from_numpy(self.ys_hist).to(self.device, self.dtype)], 0)
-            if self.xbs is not None:
-                self.buffer_xbs = torch.cat([self.buffer_xbs[idxs_left:], torch.from_numpy(self.xbs).to(self.device, self.dtype)], 0)
-            self.buffer_xps_hist = torch.cat([self.buffer_xps_hist[idxs_left:], torch.from_numpy(self.xps_hist).to(self.device, self.dtype)], 0)
-            self.buffer_rewards_hist = torch.cat([self.buffer_rewards_hist[idxs_left:], torch.from_numpy(self.rewards_hist).to(self.device, self.dtype)], 0)
-            # print(f'buffer size: {len(self.buffer_thetas)}')
-            l_buffer = len(self.buffer_thetas)
-            p = np.array([i + 1 for i in range(l_buffer)], dtype=np.float)
-            p /= p.sum()
-            idxs_pick = np.random.choice(l_buffer, n_batch, p=p, replace=False)
-            self.thetas = self.buffer_thetas[idxs_pick].cpu().numpy()
-            self.dcs_hist = self.buffer_dcs_hist[idxs_pick].cpu().numpy()
-            self.ds_hist = self.buffer_ds_hist[idxs_pick].cpu().numpy()
-            self.ys_hist = self.buffer_ys_hist[idxs_pick].cpu().numpy()
-            if self.xbs is not None:
-                self.xbs = self.buffer_xbs[idxs_pick].cpu().numpy()
-            self.xps_hist = self.buffer_xps_hist[idxs_pick].cpu().numpy()
-            self.rewards_hist = self.buffer_rewards_hist[idxs_pick].cpu().numpy()
+            l_buffer = len(buffer['thetas'])
+            idx_left = -min(l_buffer, n_buffer_max - n_newtraj)
+            buffer['thetas'] = torch.cat([buffer['thetas'][idx_left:], self.thetas.to(self.buffer_device)], 0)
+            buffer['ds_hist'] = torch.cat([buffer['ds_hist'][idx_left:], self.ds_hist.to(self.buffer_device)], 0)
+            buffer['ys_hist'] = torch.cat([buffer['ys_hist'][idx_left:], self.ys_hist.to(self.buffer_device)], 0)
+            buffer['xps_hist'] = torch.cat([buffer['xps_hist'][idx_left:], self.xps_hist.to(self.buffer_device)], 0)
+            if self.use_PCE:
+                buffer['rewards_hist'] = torch.cat([buffer['rewards_hist'][idx_left:], self.rewards_hist.to(self.buffer_device)], 0)
+            l_buffer = len(buffer['thetas'])
+            if len(p) < self.n_buffer_max:
+                p = p_max[:l_buffer]
+                p /= p.sum()
+            idxs_pick = torch.multinomial(p, self.n_batch, replacement=False)
+            self.thetas = buffer['thetas'][idxs_pick].to(self.thetas.device)
+            self.ds_hist = buffer['ds_hist'][idxs_pick].to(self.ds_hist.device)
+            self.ys_hist = buffer['ys_hist'][idxs_pick].to(self.ys_hist.device)
+            self.xps_hist = buffer['xps_hist'][idxs_pick].to(self.xps_hist.device)
+            if self.use_PCE:
+                self.rewards_hist = buffer['rewards_hist'][idxs_pick].to(self.rewards_hist.device)
             ############################################
-            t2 = time.time()
             # Train the post approxer
-            if self.post_approx is not None and not self.use_grid_kld and not self.use_PCE:
-                # self.post_approx.train(self.buffer_ds_hist, self.buffer_ys_hist, self.buffer_thetas, None, n_post_approx_update)
-                # self.buffer_rewards_hist[:, -1] = self.get_rewards(self.n_stage,
-                #                                             None,
-                #                                             self.buffer_xps_hist[:, -1],
-                #                                             self.buffer_ds_hist,
-                #                                             self.buffer_ys_hist,
-                #                                             self.buffer_thetas)
-                self.post_approx.train(self.ds_hist, self.ys_hist, self.thetas, self.update, n_post_approx_update)
+            if self.post_approx is not None and not self.use_PCE:
+                self.rewards_hist = torch.zeros(self.n_batch, self.n_stage + 1)
+                self.post_approx.train(self.ds_hist, self.ys_hist, self.xps_hist, self.thetas, self.update, self.n_post_approx_update)
                 for k in range(self.n_stage + 1):
                     self.rewards_hist[:, k] = self.get_rewards(k,
-                                                               None,
-                                                               self.xps_hist[:, k],
                                                                self.ds_hist[:, :k+1],
                                                                self.ys_hist[:, :k+1],
-                                                               self.thetas)
-                self.buffer_rewards_hist[idxs_pick] = torch.from_numpy(self.rewards_hist).to(self.device, self.dtype)
-                pass
-            
-            t3 = time.time()
+                                                               self.xps_hist[:, :k+2],
+                                                               self.thetas,
+                                                               True)
             ############################################
             if self.update <= frozen:
+                self.dowel.logger.pop_prefix()
                 self.update += 1
                 continue
             # Form the inputs and target values of critic network, and form the 
             # inputs of the actor network.
-            X_critic = torch.zeros(self.n_stage * n_batch,  self.backend_input_dimn + self.n_design).to(self.device, self.dtype)
-            # X_actor = torch.zeros(self.n_stage * n_batch,   self.backend_input_dimn).to(self.device, self.dtype)
-            if not on_policy:
-                X_critic_off = torch.zeros_like(X_critic)
-            g_critic = torch.zeros(self.n_stage * n_batch, 1).to(self.device, self.dtype)
-            # Uniformly distribute terminal reward
-            # self.rewards_hist[:, :self.n_stage] += self.rewards_hist[:, self.n_stage:] / self.n_stage
-            # self.rewards_hist[:, self.n_stage] = 0
             with torch.no_grad():
-                for k in range(self.n_stage):
-                    begin = k * n_batch
-                    end = (k + 1) * n_batch
-                    X = self.form_critic_input(k,
-                                               self.ds_hist[:, :k],
-                                               self.ys_hist[:, :k],
-                                               self.ds_hist[:, k])
-                    X_critic[begin:end] = X
-                    # X = self.form_actor_input(k,
-                    #                           self.ds_hist[:, :k],
-                    #                           self.ys_hist[:, :k])
-                    # X_actor[begin:end] = X
-                    # if not on_policy:
-                    #     X = self.form_critic_input(k,
-                    #                                self.ds_hist[:, :k],
-                    #                                self.ys_hist[:, :k],
-                    #                                self.dcs_hist[:, k])
-                    #     X_critic_off[begin:end] = X
-                    if k == self.n_stage - 1:
-                        g_critic[begin:end, 0] = torch.from_numpy(
-                            self.rewards_hist[:, k:].sum(-1)).to(self.device, self.dtype)
-                    else:
-                        # if l < 0:
+                g_critic = torch.zeros(self.n_batch, self.n_stage)
+                if not self.use_encoder:
+                    X_critic = torch.zeros(self.n_batch, self.n_stage, self.backend_input_dimn + self.n_design)
+                factor = 1 if self.transition <= 0 else min(self.update / self.transition, 1)
+
+                if factor < 1:
+                    for k in range(self.n_stage):
                         rewards = self.rewards_hist[:, k:]
-                        discounts = np.array([discount ** kk for kk in range(rewards.shape[1])])
-                        Q1 = torch.from_numpy(
-                        (rewards * discounts).sum(-1)).to(self.device, self.dtype)
-                        # g_critic[begin:end, 0] = torch.from_numpy(
-                        # (rewards * discounts).sum(-1)).to(self.device, self.dtype)
-                        # else:
+                        discounts = self.discount ** torch.arange(rewards.shape[1])
+                        discounts[-1] = discounts[-2]
+                        g_critic[:, k] = (rewards * discounts).sum(-1) * (1 - factor)
+                if self.use_encoder:
+                    if on_policy:
+                        ds_next = self.ds_hist[:, 1:]
+                        ds_next = torch.cat([torch.zeros(len(ds_next), 1, self.n_design), ds_next], dim=1)
+                        values_next = self.critics(self.ds_hist[:, :-1], self.ys_hist[:, :-1], 
+                            self.xps_hist[:, :-1], ds_next)[:, 1:]
+                    else:
+                        ds_next = self.actors_target(self.ds_hist[:, :-2], self.ys_hist[:, :-2], 
+                            self.xps_hist[:, :-2])
+                        ds_next = torch.cat([torch.zeros(len(ds_next), 1, self.n_design),
+                            ds_next], dim=1)
+                        values_next = self.critics_target(self.ds_hist[:, :-1], self.ys_hist[:, :-1], 
+                            self.xps_hist[:, :-1], ds_next)[:, 1:]
+                    for k in range(self.n_stage - 1):
+                        g_critic[:, k] += (self.discount * values_next[:, k] 
+                        + self.rewards_hist[:, k]) * factor
+                else:
+                    for k in range(self.n_stage):
+                        X = self.form_critic_input(k,
+                                                   self.ds_hist[:, :k],
+                                                   self.ys_hist[:, :k],
+                                                   self.ds_hist[:, k])
+                        X_critic[:, k, :] = X
                         if on_policy:
                             ds_next = self.ds_hist[:, k + 1]
-                            next_action_value = self.get_action_value(k + 1, 
+                            next_action_value = self.critic(k + 1, 
                                 self.ds_hist[:, :k + 1],
                                 self.ys_hist[:, :k + 1],
-                                ds_next,
-                                use_target=False)
+                                None,
+                                ds_next)
                         else:
-                            ds_next = self.get_designs(k + 1, 
+                            ds_next = self.actor_target(k + 1, 
                                 self.ds_hist[:, :k + 1],
                                 self.ys_hist[:, :k + 1],
-                                use_target=True)
-                            next_action_value = self.get_action_value(k + 1, 
+                                None)
+                            next_action_value = self.critic_target(k + 1, 
                                 self.ds_hist[:, :k + 1],
                                 self.ys_hist[:, :k + 1],
-                                ds_next,
-                                use_target=True)
-                        # g_critic[begin:end, 0] = torch.from_numpy(
-                        #     self.rewards_hist[:, k] + discount * 
-                        #     next_action_value).to(self.device, self.dtype)
-                        Q2 = torch.from_numpy(
-                            self.rewards_hist[:, k] + discount * 
-                            next_action_value).to(self.device, self.dtype)
-                        factor = min(self.update / transition, 1)
-                        g_critic[begin:end, 0] = Q1 * (1 - factor) + Q2 * factor
-            X_actor = X_critic[..., :-self.n_design]
+                                None,
+                                ds_next)
+                        g_critic[:, k] += (self.discount * next_action_value 
+                        + self.rewards_hist[:, k]) * factor
             # Train critic.
-            t4 = time.time()
             for _ in range(n_critic_update):
-                y_critic = self.critic_net(X_critic)
-                loss = torch.mean((g_critic - y_critic) ** 2)
+                if not use_encoder:
+                    y_critic = self.critic_net(X_critic)
+                else:
+                    y_critic = self.critics(self.ds_hist[:, :-1], self.ys_hist[:, :-1], self.xps_hist[:, :-1], self.ds_hist)
+                    self.encoder_critic_optimizer.zero_grad()
+                loss = critic_loss_fun(g_critic, y_critic)
                 self.critic_optimizer.zero_grad()
                 loss.backward()
+                if self.use_encoder: self.encoder_critic_optimizer.step()
                 self.critic_optimizer.step()
-   
+
+            if self.use_encoder: self.encoder_critic_lr_scheduler.step()
             self.critic_lr_scheduler.step()
-            t5 = time.time()
-            # # BP to get grad_d Q(x, k)
-            # if on_policy:
-            #     X_critic_back = X_critic
-            # else:
-            #     X_critic_back = X_critic_off
-            # X_critic_back.requires_grad = True
-            # X_critic_back.grad = None
-            # output = self.critic_net(X_critic_back).sum()
-            # output.backward()
-            # critic_grad = X_critic_back.grad[:, -self.n_design:]
-            # One step update on the actor network.
-            # Add negative sign here because we want to do maximization.
-            if self.update > frozen:
+
+            # Train actor
+            if not self.use_encoder:
+                X_actor = X_critic[..., :-self.n_design]
                 designs = self.actor_net(X_actor)
                 X = torch.cat([X_actor, designs], dim=-1)
                 output = -self.critic_net(X).mean()
-                self.actor_optimizer.zero_grad()
-                output.backward()
-                # if self.update % 100 == 0:
-                #     grad_max = 0
-                #     weight_max = 0
-                #     for param in self.actor_net.parameters():
-                #         grad_max = max(grad_max, torch.abs(param.grad).max().item())
-                #         weight_max = max(weight_max, torch.abs(param).max().item())
-                #     print('max grad: ', grad_max)
-                #     print('max weight: ', weight_max)
-                if grad_clip != np.inf:
-                    for param in self.actor_net.parameters():
-                        param.grad = torch.clamp(param.grad, -grad_clip, grad_clip)
-                self.actor_optimizer.step()
-                self.actor_lr_scheduler.step()
-
-            t6 = time.time()
+            else:
+                designs = self.actors(self.ds_hist[:, :-1], self.ys_hist[:, :-1], self.xps_hist[:, :-1])
+                output = -self.critics(self.ds_hist[:, :-1], self.ys_hist[:, :-1], self.xps_hist[:, :-1], 
+                    designs, state_no_grad=True).mean()
+                self.encoder_actor_optimizer.zero_grad()
+            self.actor_optimizer.zero_grad()
+            output.backward()
+            self.actor_optimizer.step()
+            self.actor_lr_scheduler.step()
+            if self.use_encoder: 
+                self.encoder_actor_optimizer.step()
+                self.encoder_actor_lr_scheduler.step()
 
             for param, target_param in zip(self.actor_net.parameters(), self.actor_target_net.parameters()):
                 target_param.data.copy_(self.lr_target * param.data + (1 - self.lr_target) * target_param.data)
             for param, target_param in zip(self.critic_net.parameters(), self.critic_target_net.parameters()):
                 target_param.data.copy_(self.lr_target * param.data + (1 - self.lr_target) * target_param.data)
 
-            self.update += 1
             self.design_noise_scale *= design_noise_decay
-            # if self.update % 100 == 0:
-            #     print(f'Assessment time: {t2 - t1:.3}')
-            #     print(f'Train post approxer: {t3 - t2:.3}')
-            #     print(f'Form input of actor and critic net: {t4 - t3:.3}')
-            #     print(f'Train critic: {t5 - t4:.3}')
-            #     print(f'Train actor: {t6 - t5:.3}')
-            #     print(f'Total one step time: {t6 - t1:.3}')
-        # the_all = self.asses(n_traj, self.design_noise_scale, return_all = True)
-        # return the_all
+            self.update += 1
+            if self.update % self.save_every and self.save_path is not None:
+                joblib.dump(self, save_path + f'/itr_{self.update}.pkl')
+            log(f'Checkpoint saved', self.dowel, 1, 1)
+
+            t2 = time.time()
+            log(f'Total time {t2 - t0:.2f} s', self.dowel, self.update, self.log_every)
+            log(f'Epoch time {t2 - t1:.2f} s', self.dowel, self.update, self.log_every)
+            self.dowel.logger.pop_prefix()
+
+        if self.dowel:
+            self.dowel.logger.remove_all()
             
-    def asses(self, n_traj=10000, design_noise_scale=None,
-              use_grid_kld=None, use_PCE=None, use_PCE_incre=None,
-              n_contrastive_sample=None,
-              store_belief_state=False, return_all=False, theta_samples=None, return_all_horizon_rewards=False):
+    def asses(self, n_traj=10000, design_noise_scale=None, in_training=False,
+              use_PCE=True, use_PCE_incre=True, n_contrastive_sample=10000,
+              return_nkld_rewards=False, return_all=False, 
+              theta_samples=None, save_path=None, dowel=None):
         """
         A function to asses the performance of current policy.
 
@@ -935,185 +924,113 @@ class PGvsOED(VSOED):
         (optionally) other assesment results.
         """
         
-        
-        # Generate prior samples.
         if design_noise_scale is None:
-            design_noise_scale = np.zeros(self.n_design)
+            design_noise_scale = torch.zeros(self.n_design)
         elif isinstance(design_noise_scale, (int, float)):
-            design_noise_scale = np.ones(self.n_design) * design_noise_scale
-        elif isinstance(design_noise_scale, (list, tuple, np.ndarray)):
-            assert (isinstance(design_noise_scale, (list, tuple, np.ndarray))
+            design_noise_scale = torch.ones(self.n_design) * design_noise_scale
+        elif isinstance(design_noise_scale, (list, tuple)):
+            assert (isinstance(design_noise_scale, (list, tuple))
                     and len(design_noise_scale) == self.n_design)
-        if isinstance(use_grid_kld, bool):
-            use_grid_kld_bckup = self.use_grid_kld
-            self.use_grid_kld = use_grid_kld
-        if isinstance(use_PCE, bool):
-            use_PCE_bckup = self.use_PCE
-            self.use_PCE = use_PCE
-            if isinstance(use_PCE_incre, bool):
-                self.use_PCE_incre = use_PCE_incre
-        if self.use_PCE:
-            if n_contrastive_sample is None:
-                if self.n_contrastive_sample is not None:
-                    n_contrastive_sample = self.n_contrastive_sample
-                else:
-                    n_contrastive_sample = 10000
-        assert not (self.use_grid_kld and self.use_PCE), (
-               "use_grid_kld and use_PCE cannot both be True")
-        if store_belief_state:
-            assert self.use_grid_kld, (
-                   "use_grid_kld must be True if store_belief_state is True")
-        if self.use_grid_kld:
-            self.check_grid()
-            self.init_xb = self.get_xb(None)
-        
+            design_noise_scale = torch.tensor(design_noise_scale)
+
         if theta_samples is None:
             thetas = self.prior_rvs(n_traj)
         else:
+            assert len(theta_samples) == n_traj
             thetas = theta_samples
 
-        if self.use_PCE:
+        if use_PCE:
             contrastive_thetas = self.prior_rvs(n_contrastive_sample)
             
-        dcs_hist = np.zeros((n_traj, self.n_stage, self.n_design))
-        ds_hist = np.zeros((n_traj, self.n_stage, self.n_design))
-        Gs_hist = np.zeros((n_traj, self.n_stage, self.n_obs))
-        ys_hist = np.zeros((n_traj, self.n_stage, self.n_obs))
+        dcs_hist = torch.zeros(n_traj, self.n_stage, self.n_design)
+        ds_hist = torch.zeros(n_traj, self.n_stage, self.n_design)
+        ys_hist = torch.zeros(n_traj, self.n_stage, self.n_obs)
         
-        if store_belief_state:
-            # We only store the terminal belief state.
-            xbs = np.zeros((n_traj, *self.init_xb.shape))
-        else:
-            xbs = None
-            
         # Store n_stage + 1 physical states.
-        xps_hist = np.zeros((n_traj, self.n_stage + 1, self.n_xp))
+        xps_hist = torch.zeros(n_traj, self.n_stage + 1, self.n_xp)
         xps_hist[:, 0] = self.init_xp
-        if return_all_horizon_rewards:
-            assert self.use_PCE and not self.use_PCE_incre
-            rewards_hist = {}
-            for horizon in range(1, self.n_stage + 1):
-                rewards_hist[horizon] = np.zeros((n_traj, horizon + 1))
+        if return_nkld_rewards:
+            nkld_rewards_hist = torch.zeros(n_traj, self.n_stage + 1)
         else:
-            rewards_hist = np.zeros((n_traj, self.n_stage + 1))
-        progress_points = np.rint(np.linspace(0, n_traj - 1, 30))
+            nkld_rewards_hist = 0
+        rewards_hist = torch.zeros(n_traj, self.n_stage + 1)
 
         for k in range(self.n_stage + 1):
             if k < self.n_stage:
                 # Get clean designs.
                 with torch.no_grad():
-                    dcs = self.get_designs(k, ds_hist[:, :k], ys_hist[:, :k])
+                    dcs = self.actor(k, ds_hist[:, :k], ys_hist[:, :k], xps_hist[:, :k+1])
                 
                 dcs_hist[:, k, :] = dcs
                 # Add design noise for exploration. 
-
-                ds = np.random.normal(loc=dcs, scale=design_noise_scale)
-                ds = np.maximum(ds, self.design_bounds[:, 0])
-                ds = np.minimum(ds, self.design_bounds[:, 1])
-                # if k % 2 == 0:
-                #     ds = ds * 0 + thetas[:, :2]
-                # else:
-                #     ds = ds * 0 + thetas[:, 2:]
-                # ds = ds * 0 + np.random.randn(*ds.shape) * 4
+                ds = dcs + torch.randn(dcs.shape) * design_noise_scale
+                ds = torch.maximum(ds, self.design_bounds[:, 0])
+                ds = torch.minimum(ds, self.design_bounds[:, 1])
                 ds_hist[:, k, :] = ds
                 
                 # Run the forward model to get observations.
-                Gs = self.m_f(k, thetas, ds, xps_hist[:, k, :])
-                Gs_hist[:, k, :] = Gs
-                
-                #print([thetas.shape, Gs.shape])
-                
-                ys = np.random.normal(Gs + self.noise_loc, self.noise_b_s + self.noise_r_s * np.abs(Gs))
-               # print(ys.shape)
-                
+                ys = self.m_f(k, thetas, ds, xps_hist[:, k, :])
                 ys_hist[:, k, :] = ys
                 
-                # Get rewards.
-                # for i in range(n_traj):
-                #     rewards_hist[i, k] = self.get_reward(k, 
-                #                                          None, 
-                #                                          xps_hist[i, k],
-                #                                          ds[i],
-                #                                          ys[i])
-                if not self.use_grid_kld and not self.use_PCE:
-                    rewards_hist[:, k] = self.get_rewards(k,
-                                                          None,
-                                                          xps_hist[:, k],
-                                                          ds_hist[:, :k+1],
-                                                          ys_hist[:, :k+1],
-                                                          thetas
-                                                          )
                 # Update physical state.
-                xps = self.xp_f(xps_hist[:, k],
-                                k,
-                                ds, ys)
+                xps = self.xp_f(k, xps_hist[:, k], ds, ys)
                 xps_hist[:, k + 1] = xps
+
+                # Get rewards.
+                rewards_hist[:, k] += self.get_rewards(k,
+                                                       ds_hist[:, :k+1],
+                                                       ys_hist[:, :k+1],
+                                                       xps_hist[:, :k+2],
+                                                       thetas,
+                                                       not use_PCE)
             else:
-                if self.use_grid_kld:
-                    for i in range(n_traj):
-                        # Get terminal belief state.
-                        # print(thetas[i])
-                        xb = self.get_xb(d_hist=ds_hist[i],  y_hist=ys_hist[i])
-                        # print(xb[:, -1].min(), xb[:, -1].max(),  xb[:, -1].sum() * self.dgrid, np.isnan(xb[:, -1]).mean())
-                        if store_belief_state:
-                            xbs[i] = xb
-                        # Get reward.
-                        rewards_hist[i, k] = self.get_reward(k, 
-                                                             xb, 
-                                                             xps_hist[i, k],
-                                                             None,
-                                                             None)
-                        # print('*' * (progress_points == i).sum(), end='')
-                elif self.use_PCE:
-                    for i in trange(n_traj):
-                        # contrastive_loglikelis = np.zeros((n_contrastive_sample + 1, self.n_stage))
+                if use_PCE:
+                    rewards_hist[:, k] += self.get_rewards(k,
+                                                           ds_hist,
+                                                           ys_hist,
+                                                           xps_hist,
+                                                           thetas,
+                                                           False)
+                    range_ = range if in_training else trange
+                    for i in range_(n_traj):
+                        # contrastive_loglikelis = torch.zeros(n_contrastive_sample + 1, self.n_stage)
                         contrastive_loglikelis = None
-                        contrastive_samples = np.concatenate([thetas[i:i+1], contrastive_thetas], 0)
+                        contrastive_samples = torch.cat([thetas[i:i+1], contrastive_thetas], dim=0)
                         for kk in range(self.n_stage):
                             loglikelis = self.loglikeli(kk, ys_hist[i:i+1, kk, :], contrastive_samples, 
                                                         ds_hist[i:i+1, kk, :], xps_hist[i:i+1, kk, :], thetas[i])
-                            contrastive_loglikelis = loglikelis.reshape(-1, 1) if contrastive_loglikelis is None else np.c_[contrastive_loglikelis, loglikelis.reshape(-1, 1)]
-                            # contrastive_loglikelis[:, kk] = loglikelis
-                        # contrastive_Gs = np.concatenate([Gs_hist[i:i+1], contrastive_Gs], axis=0)
-                        # contrastive_likelis = norm_pdf(ys_hist[i:i+1], 
-                        #                                contrastive_Gs + self.noise_loc,
-                        #                                self.noise_b_s + self.noise_r_s * np.abs(contrastive_Gs))
-                        contrastive_likelis = np.exp(contrastive_loglikelis)
-                        if not self.use_PCE_incre:
-                            if not return_all_horizon_rewards:
-                                contrastive_likelis = contrastive_likelis.prod(axis=-1)
-                                contrastive_evid = contrastive_likelis.mean()
-                                # if contrastive_likelis[0] == 0 or contrastive_evid == 0:
-                                #     print(ys_hist[i])
-                                rewards_hist[i, k] = np.log(contrastive_likelis[0] / contrastive_evid)
+                            if contrastive_loglikelis is None:
+                                contrastive_loglikelis = loglikelis.reshape(-1, 1) 
                             else:
-                                likelis = np.ones(len(contrastive_likelis))
-                                for horizon in range(1, self.n_stage + 1):
-                                    likelis *= contrastive_likelis[:, horizon - 1]
-                                    evid = likelis.mean()
-                                    rewards_hist[horizon][i, -1] = np.log(likelis[0] / evid)
+                                contrastive_loglikelis = torch.cat([contrastive_loglikelis, loglikelis.reshape(-1, 1)], dim=1)
+                        contrastive_likelis = torch.exp(contrastive_loglikelis)
+                        if not self.use_PCE_incre:
+                            contrastive_likelis = contrastive_likelis.prod(dim=-1)
+                            contrastive_evid = contrastive_likelis.mean()
+                            rewards_hist[i, k] += torch.log(contrastive_likelis[0] / contrastive_evid)
                         else:
                             evid_prev = 1.0
                             for kk in range(self.n_stage):
-                                evid = contrastive_likelis[:, :kk + 1].prod(axis=-1).mean()
-                                rewards_hist[i, kk] = np.log(contrastive_likelis[0, kk] / evid * evid_prev)
+                                evid = contrastive_likelis[:, :kk + 1].prod(dim=-1).mean()
+                                rewards_hist[i, kk] += torch.log(contrastive_likelis[0, kk] / evid * evid_prev)
                                 evid_prev = evid
-
-
                 else:
-                    rewards_hist[:, k] = self.get_rewards(k,
-                                                          None,
-                                                          xps_hist[:, k],
-                                                          ds_hist,
-                                                          ys_hist,
-                                                          thetas)
-                    
-                 #   print([k, rewards_hist.sum(-1).mean()])
-                    
-        averaged_reward = rewards_hist.sum(-1).mean() if not return_all_horizon_rewards else rewards_hist[self.n_stage].sum(-1).mean()
-        
-     
-        
+                    rewards_hist[:, k] += self.get_rewards(k,
+                                                           ds_hist,
+                                                           ys_hist,
+                                                           xps_hist,
+                                                           thetas,
+                                                           True)
+
+            if return_nkld_rewards:
+                nkld_rewards_hist[:, k] += self.get_rewards(k,
+                                                            ds_hist[:, :k+1],
+                                                            ys_hist[:, :k+1],
+                                                            xps_hist[:, :k+2],
+                                                            thetas,
+                                                            False)
+                       
+        averaged_reward = rewards_hist.sum(-1).mean().item()
         
         self.averaged_reward = averaged_reward
         self.thetas = thetas
@@ -1123,14 +1040,29 @@ class PGvsOED(VSOED):
         self.xbs = xbs
         self.xps_hist = xps_hist
         self.rewards_hist = rewards_hist
-        if isinstance(use_grid_kld, bool):
-            self.use_grid_kld = use_grid_kld_bckup
-        if isinstance(use_PCE, bool):
-            self.use_PCE = use_PCE_bckup
+
+        ret = {
+        'averaged_reward': averaged_reward,
+        'thetas': thetas,
+        'dcs_hist': dcs_hist,
+        'ds_hist': ds_hist,
+        'ys_hist': ys_hist,
+        'xps_hist': xps_hist,
+        'nkld_rewards_hist': nkld_rewards_hist,
+        'rewards_hist': rewards_hist
+        }
+
+        if not in_training:
+            if save_path is not None:
+                torch.save(ret, save_path)
+            if self.dowel is not None:
+                self.dowel.logger.log('Evaluating...')
+                for k in range(1, rewards_hist.shape[1]):
+                    self.dowel.logger.log(f'{k}-horizon averaged reward: {rewards_hist[:, :k].sum(-1).mean().item():.3f}')
+                self.dowel.logger.log(f'total averaged reward: {rewards_hist.sum(-1).mean().item():.3f}')
+                self.dowel.logger.log(f'total reward se: {rewards_hist.sum(-1).std().item() / math.sqrt(len(rewards_hist)):.3f}')
+
         if return_all:
-            return (averaged_reward, thetas, 
-                    dcs_hist, ds_hist, ys_hist, 
-                    xbs, xps_hist, 
-                    rewards_hist, Gs_hist)
+            return ret
         else:
             return averaged_reward

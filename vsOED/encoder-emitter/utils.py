@@ -1,57 +1,33 @@
-import math
-from numbers import Number
-
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.distributions import Distribution, constraints
-from torch.distributions.utils import broadcast_all
-
-CONST_SQRT_2 = math.sqrt(2)
-CONST_INV_SQRT_2PI = 1 / math.sqrt(2 * math.pi)
-CONST_INV_SQRT_2 = 1 / math.sqrt(2)
-CONST_LOG_INV_SQRT_2PI = math.log(CONST_INV_SQRT_2PI)
-CONST_LOG_SQRT_2PI_E = 0.5 * math.log(2 * math.pi * math.e)
-
 # import warnings
 # warnings.filterwarnings("ignore")
-
-def set_random_seed(random_state=None):
-    NoneType = type(None)
-    assert isinstance(random_state, (int, NoneType)), (
-           "random_state should be an integer or None.")
-    if random_state is not None:
-        np.random.seed(random_state)
-        torch.manual_seed(random_state)
-
-def log(content, dowel, update, verbose):
-    if dowel is not None and update % verbose == 0:
-        dowel.logger.log(content)
 
 # logpdf of independent normal distribution.
 # x is of size (n_sample, n_param or n_obs).
 # loc and scale are int or numpy.ndarray of size n_param or n_obs.
 # output is of size n_sample.
 def norm_logpdf(x, loc=0, scale=1):
-    logpdf = (-torch.log(math.sqrt(2 * math.pi) * scale) 
+    logpdf = (-np.log(np.sqrt(2 * np.pi) * scale) 
               - (x - loc) ** 2 / 2 / scale ** 2)
-    return logpdf.sum(dim=-1)
+    return logpdf.sum(axis=-1)
 
 # pdf of independent normal distribution.
 def norm_pdf(x, loc=0, scale=1):
-    return torch.exp(norm_logpdf(x, loc, scale))
+    return np.exp(norm_logpdf(x, loc, scale))
 
 # logpdf of uniform distribution.
 def uniform_logpdf(x, low=0, high=1):
-    return torch.log(uniform_pdf(x, low, high))
+    return np.log(uniform_pdf(x, low, high))
 
 # pdf of uniform distribution.
 def uniform_pdf(x, low=0, high=1):
     pdf = ((x >= low) * (x <= high)) / (high - low)
     return pdf.prod(axis=-1)
 
-# encoder network
 class Encoder(nn.Module):
-    def __init__(self, dimns, activate):
+    def __init__(self, dimns, activate, device, dtype):
         super().__init__()
         layers = []
         for i in range(len(dimns) - 1):
@@ -60,16 +36,27 @@ class Encoder(nn.Module):
                 # layers.append(nn.BatchNorm1d(dimns[i + 1]))
             layers.append(activate())
         self.dimns = dimns
-        self.net = nn.Sequential(*layers)
+        self.net = nn.Sequential(*layers).to(device, dtype)
+        self.device = device
+        self.dtype = dtype
 
     def forward(self, ds_hist, ys_hist, xps_hist=None, return_all_stages=False):
         n_sample = max(len(ds_hist), len(ys_hist))
         n_stage = ds_hist.shape[1]
         if xps_hist is None:
-            xps_hist = torch.empty(n_sample, n_stage, 0)
+            xps_hist = torch.empty(n_sample, n_stage, 0).to(self.device, self.dtype)
+        if isinstance(ds_hist, np.ndarray):
+            ds_hist = torch.from_numpy(ds_hist)
+        if isinstance(ys_hist, np.ndarray):
+            ys_hist = torch.from_numpy(ys_hist)
+        if isinstance(xps_hist, np.ndarray):
+            xps_hist = torch.from_numpy(xps_hist)
+        ds_hist = ds_hist.to(self.device, self.dtype)
+        ys_hist = ys_hist.to(self.device, self.dtype)
+        xps_hist = xps_hist.to(self.device, self.dtype)
         if return_all_stages:
-            rets = torch.zeros(n_sample, n_stage + 1, self.dimns[-1])
-        current_sum = torch.zeros(n_sample, self.dimns[-1])
+            rets = torch.zeros(n_sample, n_stage + 1, self.dimns[-1]).to(self.device, self.dtype)
+        current_sum = torch.zeros(n_sample, self.dimns[-1]).to(self.device, self.dtype)
         for i in range(n_stage):
             ds = ds_hist[:, i, :]
             ys = ys_hist[:, i, :]
@@ -84,24 +71,9 @@ class Encoder(nn.Module):
         else:
             return current_sum
 
-def initialize_encoder(encoder_dimns, activate=nn.ReLU):
-    return Encoder(encoder_dimns, activate)
-
-def get_encoded_states(encoder_net, ds_hist, ys_hist, xps_hist, return_all_stages):
-    assert ds_hist.shape[1] == ys_hist.shape[1]
-    assert xps_hist.shape[1] == ds_hist.shape[1] + 1
-    xbs_encoded = encoder_net(ds_hist, ys_hist, xps_hist[:, :-1], return_all_stages)
-    if return_all_stages:
-        xps = xps_hist
-    else:
-        xps = xps_hist[:, -1]
-    states = torch.cat([xbs_encoded, xps], dim=-1)
-    return states
-
-# policy/critic/backend network
+# Construct neural network
 class Net(nn.Module):
-    def __init__(self, dimns, activate, bounds, net_type, 
-        backend_net=None, n_design=None):
+    def __init__(self, dimns, activate, bounds, net_type, device, dtype):
         super().__init__()
         layers = []
         for i in range(len(dimns) - 1):
@@ -109,43 +81,54 @@ class Net(nn.Module):
             if i < len(dimns) - 2:
                 # layers.append(nn.BatchNorm1d(dimns[i + 1]))
                 layers.append(activate())
-        self.net = nn.Sequential(*layers)
-        if net_type != 'backend':
-            self.bounds = bounds
-            self.has_inf = torch.isinf(self.bounds).sum()
-        self.backend_net = backend_net
+        self.net = nn.Sequential(*layers).to(device, dtype)
+        self.bounds = torch.from_numpy(bounds).to(device, dtype)
+        self.has_inf = torch.isinf(self.bounds).sum()
         self.net_type = net_type
-        self.n_design = n_design
+        self.device = device
+        self.dtype = dtype
 
-    def forward(self, x):
-        if self.net_type == 'backend':
-            x = self.net(x)
-            return x
-        elif self.net_type == 'actor':
-            if self.backend_net is not None:
-                x = self.backend_net(x)
-            x = self.net(x)
+    def forward(self, state, action=None):
+        if isinstance(state, np.ndarray):
+            state = torch.from_numpy(state)
+        state = state.to(self.device, self.dtype)
+        if action is not None:
+            if isinstance(action, np.ndarray):
+                action = torch.from_numpy(action)
+            action = action.to(self.device, self.dtype)
+        if self.net_type == 'actor':
+            x = self.net(state)
         elif self.net_type == 'critic':
-            if self.backend_net is not None:
-                ds = x[:, -self.n_design:]
-                x = self.backend_net(x[:, :-self.n_design])
-                x = torch.cat([x, ds], dim=1)
-            x = self.net(x)
+            x = self.net(torch.cat([state, action], dim=-1))
         if self.has_inf:
             x = torch.maximum(x, self.bounds[:, 0])
             x = torch.minimum(x, self.bounds[:, 1])
         else:
-            self.bounds = self.bounds.to(x)
+#             x = (torch.sigmoid(x) * (self.bounds[:, 1] - 
+#                                      self.bounds[:, 0]) + self.bounds[:, 0])
+            N = 1
             x = (torch.sigmoid(x) * (self.bounds[:, 1] - 
-                                     self.bounds[:, 0]) + self.bounds[:, 0])
+                                     self.bounds[:, 0]) * N + (self.bounds[:, 0] * (N + 1) - self.bounds[:, 1] * (N - 1)) / 2)
             x = torch.maximum(x, self.bounds[:, 0])
             x = torch.minimum(x, self.bounds[:, 1])
         return x
 
+    
 
-#############################################
-# https://github.com/toshas/torch_truncnorm #
-#############################################
+import math
+from numbers import Number
+
+import torch
+from torch.distributions import Distribution, constraints
+from torch.distributions.utils import broadcast_all
+
+CONST_SQRT_2 = math.sqrt(2)
+CONST_INV_SQRT_2PI = 1 / math.sqrt(2 * math.pi)
+CONST_INV_SQRT_2 = 1 / math.sqrt(2)
+CONST_LOG_INV_SQRT_2PI = math.log(CONST_INV_SQRT_2PI)
+CONST_LOG_SQRT_2PI_E = 0.5 * math.log(2 * math.pi * math.e)
+
+
 class TruncatedStandardNormal(Distribution):
     """
     Truncated Standard Normal distribution
@@ -234,6 +217,7 @@ class TruncatedStandardNormal(Distribution):
         shape = self._extended_shape(sample_shape)
         p = torch.empty(shape, device=self.a.device).uniform_(self._dtype_min_gt_0, self._dtype_max_lt_1)
         return self.icdf(p)
+
 
 class TruncatedNormal(TruncatedStandardNormal):
     """
