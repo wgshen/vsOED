@@ -7,28 +7,24 @@ class SOURCE(object):
         self.include_nuisance = include_nuisance
         self.include_goal = include_goal
     
-    def deterministic(self, params, ds, xps=None):
-
-        d1     = ds[:, 0:1]
-        d2     = ds[:, 1:2]
-
+    def extract_params(self, params):
+        base_signal = 0.1
+        max_signal  = 1e-4
         if not self.multimodel:
             if self.include_nuisance:
                 base_signal = params[:, 4:5]
                 max_signal = params[:, 5:6]
-            else:
-                base_signal = 0.1
-                max_signal  = 1e-4
-            
             theta1 = params[:, 0:1]
             theta2 = params[:, 1:2]
             theta3 = params[:, 2:3]
             theta4 = params[:, 3:4]
-
-            G = ( base_signal 
-                + 1/( (theta1-d1)**2 + (theta2-d2)**2 + max_signal)
-                + 1/( (theta3-d1)**2 + (theta4-d2)**2 + max_signal) )
+            theta5 = None
+            theta6 = None
+            model_idxs = None
         else:
+            if self.include_nuisance:
+                base_signal = params[:, 7:8]
+                max_signal = params[:, 8:9]
             model_idxs = params[:, 0:1]
             theta1 = params[:, 1:2]
             theta2 = params[:, 2:3]
@@ -36,12 +32,26 @@ class SOURCE(object):
             theta4 = params[:, 4:5]
             theta5 = params[:, 5:6]
             theta6 = params[:, 6:7]
-            if self.include_nuisance:
-                base_signal = params[:, 7:8]
-                max_signal = params[:, 8:9]
-            else:
-                base_signal = 0.1
-                max_signal  = 1e-4
+        return (base_signal, max_signal, model_idxs, 
+            theta1, theta2, theta3, theta4, theta5, theta6)
+
+
+
+    def deterministic(self, params, ds, xps=None):
+
+        d1     = ds[:, 0:1]
+        d2     = ds[:, 1:2]
+
+        if not self.multimodel:
+            (base_signal, max_signal, _,
+            theta1, theta2, theta3, theta4, _, _) = self.extract_params(params)
+
+            G = ( base_signal 
+                + 1/( (theta1-d1)**2 + (theta2-d2)**2 + max_signal)
+                + 1/( (theta3-d1)**2 + (theta4-d2)**2 + max_signal) )
+        else:
+            (base_signal, max_signal, model_idxs,
+            theta1, theta2, theta3, theta4, theta5, theta6) = self.extract_params(params)
 
             G = ( base_signal 
                 + 1/( (theta1-d1)**2 + (theta2-d2)**2 + max_signal)
@@ -60,16 +70,8 @@ class SOURCE(object):
     def flux(self, params):
         d1 = 4.0
         if not self.multimodel:
-            if self.include_nuisance:
-                base_signal = params[:, 4:5]
-                max_signal = params[:, 5:6]
-            else:
-                base_signal = 0.1
-                max_signal  = 1e-4
-            theta1 = params[:, 0:1]
-            theta2 = params[:, 1:2]
-            theta3 = params[:, 2:3]
-            theta4 = params[:, 3:4]
+            (base_signal, max_signal, _,
+            theta1, theta2, theta3, theta4, _, _) = self.extract_params(params)
 
             tmp = max_signal + (theta_1 - d1) ** 2
             flux_1 = -(theta_1 - d1) * math.pi * torch.sqrt(tmp) / tmp ** 2 
@@ -77,19 +79,8 @@ class SOURCE(object):
             flux_2 = -(theta_3 - d1) * math.pi * torch.sqrt(tmp) / tmp ** 2 
             flux = flux_1 + flux_2
         else:
-            if self.include_nuisance:
-                base_signal = params[:, 7:8]
-                max_signal = params[:, 8:9]
-            else:
-                base_signal = 0.1
-                max_signal  = 1e-4
-            model_idxs = params[:, 0:1]
-            theta1 = params[:, 1:2]
-            theta2 = params[:, 2:3]
-            theta3 = params[:, 3:4]
-            theta4 = params[:, 4:5]
-            theta5 = params[:, 5:6]
-            theta6 = params[:, 6:7]
+            (base_signal, max_signal, model_idxs,
+            theta1, theta2, theta3, theta4, theta5, theta6) = self.extract_params(params)
 
             tmp = max_signal + (theta_1 - d1) ** 2
             flux_1 = -(theta_1 - d1) * math.pi * torch.sqrt(tmp) / tmp ** 2 
