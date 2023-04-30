@@ -18,10 +18,10 @@ class PGvsOED(VSOED):
     Parameters
     ----------
     model_fun : function
-        Forward model function G_k(theta, d_k, x_{k,p}). It will be abbreviated 
+        Forward model function G_k(param, d_k, x_{k,p}). It will be abbreviated 
         as m_f inside this class.
         The forward model function should take following inputs:
-            * theta, numpy.ndarray of size (n_sample or 1, n_param)
+            * param, numpy.ndarray of size (n_sample or 1, n_param)
                 Parameter samples.
             * d, numpy.ndarray of size (n_sample or 1, n_design)
                 Designs.
@@ -29,7 +29,7 @@ class PGvsOED(VSOED):
                 Physical states.
         and the output is 
             * numpy.ndarray of size (n_sample, n_obs).
-        When the first dimension of theta, d or xp is 1, it should be augmented
+        When the first dimension of param, d or xp is 1, it should be augmented
         to align with the first dimension of other inputs (i.e., we reuse it for
         all samples).
     n_stage : int
@@ -334,9 +334,9 @@ class PGvsOED(VSOED):
         self.critic_dimns = critic_dimns.copy()
         critic_dimns = [self.critic_input_dimn] + list(critic_dimns) + [output_dimn]
         self.critic_net = Net(critic_dimns, self.activate, 
-            np.array([[-np.inf, np.inf]]), 'critic', self.backend_net, self.n_design)
+            torch.tensor([[-float(int), float(int)]]), 'critic', self.backend_net, self.n_design)
         self.critic_target_net = Net(critic_dimns, self.activate, 
-            np.array([[-np.inf, np.inf]]), 'critic', self.backend_target_net, self.n_design)
+            torch.tensor([[-float(int), float(int)]]), 'critic', self.backend_target_net, self.n_design)
         self.critic_target_net.load_state_dict(self.critic_net.state_dict())
         self.update = 0
         self.critic_optimizer = None  
@@ -698,7 +698,7 @@ class PGvsOED(VSOED):
         # Initialize replay buffer
         buffer = {}
         self.asses(self.n_buffer_init, self.design_noise_scale, True, self.use_PCE, self.use_PCE_incre, self.n_contrastive_sample)
-        buffer['thetas'] = self.thetas.to(self.buffer_device)
+        buffer['params'] = self.params.to(self.buffer_device)
         buffer['ds_hist'] = self.ds_hist.to(self.buffer_device)
         buffer['ys_hist'] = self.ys_hist.to(self.buffer_device)
         buffer['xps_hist'] = self.xps_hist.to(self.buffer_device)
@@ -721,24 +721,24 @@ class PGvsOED(VSOED):
             self.dowel.tabular.record('Reward/StdReward', rewards.std().item())
             self.dowel.tabular.record('Design/MeanDesign', self.dcs_hist.mean(dim=(0, 1)).tolist())
             self.dowel.tabular.record('Design/StdDesign', self.dcs_hist.std(dim=(0, 1)).tolist())
-            self.dowel.tabular.record('ReplayBuffer/buffer_size', len(buffer['thetas']))
+            self.dowel.tabular.record('ReplayBuffer/buffer_size', len(buffer['params']))
             log(self.dowel.tabular, self.dowel, self.update, self.log_every)
             self.update_hist.append(self.averaged_reward)   
             # Update the replay buffer
-            l_buffer = len(buffer['thetas'])
+            l_buffer = len(buffer['params'])
             idx_left = -min(l_buffer, n_buffer_max - n_newtraj)
-            buffer['thetas'] = torch.cat([buffer['thetas'][idx_left:], self.thetas.to(self.buffer_device)], 0)
+            buffer['params'] = torch.cat([buffer['params'][idx_left:], self.params.to(self.buffer_device)], 0)
             buffer['ds_hist'] = torch.cat([buffer['ds_hist'][idx_left:], self.ds_hist.to(self.buffer_device)], 0)
             buffer['ys_hist'] = torch.cat([buffer['ys_hist'][idx_left:], self.ys_hist.to(self.buffer_device)], 0)
             buffer['xps_hist'] = torch.cat([buffer['xps_hist'][idx_left:], self.xps_hist.to(self.buffer_device)], 0)
             if self.use_PCE:
                 buffer['rewards_hist'] = torch.cat([buffer['rewards_hist'][idx_left:], self.rewards_hist.to(self.buffer_device)], 0)
-            l_buffer = len(buffer['thetas'])
+            l_buffer = len(buffer['params'])
             if len(p) < self.n_buffer_max:
                 p = p_max[:l_buffer]
                 p /= p.sum()
             idxs_pick = torch.multinomial(p, self.n_batch, replacement=False)
-            self.thetas = buffer['thetas'][idxs_pick].to(self.thetas.device)
+            self.params = buffer['params'][idxs_pick].to(self.params.device)
             self.ds_hist = buffer['ds_hist'][idxs_pick].to(self.ds_hist.device)
             self.ys_hist = buffer['ys_hist'][idxs_pick].to(self.ys_hist.device)
             self.xps_hist = buffer['xps_hist'][idxs_pick].to(self.xps_hist.device)
@@ -748,13 +748,13 @@ class PGvsOED(VSOED):
             # Train the post approxer
             if self.post_approx is not None and not self.use_PCE:
                 self.rewards_hist = torch.zeros(self.n_batch, self.n_stage + 1)
-                self.post_approx.train(self.ds_hist, self.ys_hist, self.xps_hist, self.thetas, self.update, self.n_post_approx_update)
+                self.post_approx.train(self.ds_hist, self.ys_hist, self.xps_hist, self.params, self.update, self.n_post_approx_update)
                 for k in range(self.n_stage + 1):
                     self.rewards_hist[:, k] = self.get_rewards(k,
                                                                self.ds_hist[:, :k+1],
                                                                self.ys_hist[:, :k+1],
                                                                self.xps_hist[:, :k+2],
-                                                               self.thetas,
+                                                               self.params,
                                                                True)
             ############################################
             if self.update <= frozen:
@@ -867,6 +867,7 @@ class PGvsOED(VSOED):
             log(f'Total time {t2 - t0:.2f} s', self.dowel, self.update, self.log_every)
             log(f'Epoch time {t2 - t1:.2f} s', self.dowel, self.update, self.log_every)
             self.dowel.logger.pop_prefix()
+            self.dowel.logger.dump_all()
 
         if self.dowel:
             self.dowel.logger.remove_all()
@@ -874,7 +875,7 @@ class PGvsOED(VSOED):
     def asses(self, n_traj=10000, design_noise_scale=None, in_training=False,
               use_PCE=True, use_PCE_incre=True, n_contrastive_sample=10000,
               return_nkld_rewards=False, return_all=False, 
-              theta_samples=None, save_path=None, dowel=None):
+              param_samples=None, save_path=None, dowel=None):
         """
         A function to asses the performance of current policy.
 
@@ -893,7 +894,7 @@ class PGvsOED(VSOED):
             If True, return a tuple of all information generated during the 
             assesment, including 
             * averaged_reward (averaged total reward), float
-            * thetas (parameters), numpy.ndarray of size (n_traj, n_param).
+            * params (parameters), numpy.ndarray of size (n_traj, n_param).
             * dcs_hist (clean designs), numpy.ndarray of size (n_traj,
                                                                n_stage,
                                                                n_design)
@@ -933,14 +934,14 @@ class PGvsOED(VSOED):
                     and len(design_noise_scale) == self.n_design)
             design_noise_scale = torch.tensor(design_noise_scale)
 
-        if theta_samples is None:
-            thetas = self.prior_rvs(n_traj)
+        if param_samples is None:
+            params = self.prior_rvs(n_traj)
         else:
-            assert len(theta_samples) == n_traj
-            thetas = theta_samples
+            assert len(param_samples) == n_traj
+            params = param_samples
 
         if use_PCE:
-            contrastive_thetas = self.prior_rvs(n_contrastive_sample)
+            contrastive_params = self.prior_rvs(n_contrastive_sample)
             
         dcs_hist = torch.zeros(n_traj, self.n_stage, self.n_design)
         ds_hist = torch.zeros(n_traj, self.n_stage, self.n_design)
@@ -969,7 +970,7 @@ class PGvsOED(VSOED):
                 ds_hist[:, k, :] = ds
                 
                 # Run the forward model to get observations.
-                ys = self.m_f(k, thetas, ds, xps_hist[:, k, :])
+                ys = self.m_f(k, params, ds, xps_hist[:, k, :])
                 ys_hist[:, k, :] = ys
                 
                 # Update physical state.
@@ -981,7 +982,7 @@ class PGvsOED(VSOED):
                                                        ds_hist[:, :k+1],
                                                        ys_hist[:, :k+1],
                                                        xps_hist[:, :k+2],
-                                                       thetas,
+                                                       params,
                                                        not use_PCE)
             else:
                 if use_PCE:
@@ -989,16 +990,16 @@ class PGvsOED(VSOED):
                                                            ds_hist,
                                                            ys_hist,
                                                            xps_hist,
-                                                           thetas,
+                                                           params,
                                                            False)
                     range_ = range if in_training else trange
                     for i in range_(n_traj):
                         # contrastive_loglikelis = torch.zeros(n_contrastive_sample + 1, self.n_stage)
                         contrastive_loglikelis = None
-                        contrastive_samples = torch.cat([thetas[i:i+1], contrastive_thetas], dim=0)
+                        contrastive_samples = torch.cat([params[i:i+1], contrastive_params], dim=0)
                         for kk in range(self.n_stage):
                             loglikelis = self.loglikeli(kk, ys_hist[i:i+1, kk, :], contrastive_samples, 
-                                                        ds_hist[i:i+1, kk, :], xps_hist[i:i+1, kk, :], thetas[i])
+                                                        ds_hist[i:i+1, kk, :], xps_hist[i:i+1, kk, :], params[i])
                             if contrastive_loglikelis is None:
                                 contrastive_loglikelis = loglikelis.reshape(-1, 1) 
                             else:
@@ -1019,7 +1020,7 @@ class PGvsOED(VSOED):
                                                            ds_hist,
                                                            ys_hist,
                                                            xps_hist,
-                                                           thetas,
+                                                           params,
                                                            True)
 
             if return_nkld_rewards:
@@ -1027,13 +1028,13 @@ class PGvsOED(VSOED):
                                                             ds_hist[:, :k+1],
                                                             ys_hist[:, :k+1],
                                                             xps_hist[:, :k+2],
-                                                            thetas,
+                                                            params,
                                                             False)
                        
         averaged_reward = rewards_hist.sum(-1).mean().item()
         
         self.averaged_reward = averaged_reward
-        self.thetas = thetas
+        self.params = params
         self.dcs_hist = dcs_hist
         self.ds_hist = ds_hist
         self.ys_hist = ys_hist
@@ -1043,7 +1044,7 @@ class PGvsOED(VSOED):
 
         ret = {
         'averaged_reward': averaged_reward,
-        'thetas': thetas,
+        'params': params,
         'dcs_hist': dcs_hist,
         'ds_hist': ds_hist,
         'ys_hist': ys_hist,
@@ -1055,12 +1056,13 @@ class PGvsOED(VSOED):
         if not in_training:
             if save_path is not None:
                 torch.save(ret, save_path)
-            if self.dowel is not None:
-                self.dowel.logger.log('Evaluating...')
+            if dowel is not None:
+                dowel.logger.log('Evaluating...')
                 for k in range(1, rewards_hist.shape[1]):
-                    self.dowel.logger.log(f'{k}-horizon averaged reward: {rewards_hist[:, :k].sum(-1).mean().item():.3f}')
-                self.dowel.logger.log(f'total averaged reward: {rewards_hist.sum(-1).mean().item():.3f}')
-                self.dowel.logger.log(f'total reward se: {rewards_hist.sum(-1).std().item() / math.sqrt(len(rewards_hist)):.3f}')
+                    dowel.logger.log(f'{k}-horizon averaged reward: {rewards_hist[:, :k].sum(-1).mean().item():.3f}')
+                dowel.logger.log(f'total averaged reward: {rewards_hist.sum(-1).mean().item():.3f}')
+                dowel.logger.log(f'total reward se: {rewards_hist.sum(-1).std().item() / math.sqrt(len(rewards_hist)):.3f}')
+                dowel.logger.dump_all()
 
         if return_all:
             return ret

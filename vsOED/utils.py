@@ -47,7 +47,7 @@ def uniform_logpdf(x, low=0, high=1):
 # pdf of uniform distribution.
 def uniform_pdf(x, low=0, high=1):
     pdf = ((x >= low) * (x <= high)) / (high - low)
-    return pdf.prod(axis=-1)
+    return pdf.prod(dim=-1)
 
 # encoder network
 class Encoder(nn.Module):

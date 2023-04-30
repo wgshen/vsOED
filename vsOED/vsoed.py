@@ -194,10 +194,10 @@ class VSOED(object):
         self.model_fun = self.m_f
         self.loglikeli = model.loglikeli
 
-        self.prior_logpdf = prior.logpdf
-        def prior_pdf(x):
-            return torch.exp(prior.logpdf(x))
-        self.prior_pdf = prior_pdf
+        # self.prior_logpdf = prior.logpdf
+        # def prior_pdf(x):
+        #     return torch.exp(prior.logpdf(x))
+        # self.prior_pdf = prior_pdf
         self.prior_rvs = prior.rvs
 
         assert isinstance(design_bounds, (list, tuple)), (
@@ -268,7 +268,7 @@ class VSOED(object):
 
     def get_rewards(self, stage=0, 
                     ds_hist=None, ys_hist=None, 
-                    xps_hist=None, thetas=None,
+                    xps_hist=None, params=None,
                     include_kld_rewards=True):
         """
         A function to compute rewards of sequences at given "stage", with belief 
@@ -290,7 +290,7 @@ class VSOED(object):
         ys_hist : numpy.ndarray of size (n_traj or 1, n_stage, n_obs), 
                   optional(default=None)
             The observation histories. 
-        thetas : numpy.ndarray of size (n_traj or 1, n_param),
+        params : numpy.ndarray of size (n_traj or 1, n_param),
              optional(default=None)
             The true underlying parameters.
         use_grid_kld : bool, optional(default=None)
@@ -301,9 +301,9 @@ class VSOED(object):
         A numpy.ndarray of size n_traj or 1 which are the rewards.
         """
         assert stage >= 0 and stage <= self.n_stage
-        nkld_rewards = self.nkld_rw_f(stage, ds_hist, ys_hist, xps_hist, thetas)
+        nkld_rewards = self.nkld_rw_f(stage, ds_hist, ys_hist, xps_hist, params)
         if include_kld_rewards:
-            kld_rewards = self.kld_rw_f(stage, ds_hist, ys_hist, xps_hist, thetas)
+            kld_rewards = self.kld_rw_f(stage, ds_hist, ys_hist, xps_hist, params)
         else:
             kld_rewards = 0
         return nkld_rewards + kld_rewards
