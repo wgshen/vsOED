@@ -366,9 +366,12 @@ class SIR(object):
             
         return log_prob
 
-    def logpdf(self, prior_samples):
-        idxs = self.idxs
-        return self.data['log_probs'][idxs.to('cpu')].to(idxs.device)
+    def log_poi_prior(self, params):
+        if self.mode == 'train':
+            return 0
+        elif self.mode == 'eval':
+            idxs = self.idxs
+            return self.data['log_probs'][idxs.to('cpu')].to(idxs.device)
     
     def rvs(self, n_sample):
         if self.mode == 'train':
@@ -376,7 +379,7 @@ class SIR(object):
                 self.load_train_data(self.foldername)
             self.train_epoch += 1
         elif self.mode == 'eval':
-            assert n_sample <= self.data['num_samples']
+            assert n_sample == self.data['num_samples']
         p = torch.ones(self.data['num_samples']) / self.data['num_samples']
         idxs = torch.multinomial(p, n_sample, replacement=False)
         self.idxs = idxs

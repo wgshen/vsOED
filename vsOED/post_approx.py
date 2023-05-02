@@ -7,7 +7,7 @@ class NFs(nn.Module):
     def __init__(self, **kws):
         pass
 
-    def forward(self, **kws):
+    def forward(self, inputs, thetas):
         return 0
 
 class GMM_NET(nn.Module):
