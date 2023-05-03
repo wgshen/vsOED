@@ -1,3 +1,4 @@
 SIR/
 vsOED_env/
-experiments/*/
+notebooks/*/
+results/

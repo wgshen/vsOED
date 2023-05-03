@@ -301,14 +301,14 @@ class SIR(object):
     def reset_test(self):
         self.mode = 'eval'
         
-    def xp_f(self, xps, stage, ds, ys):
+    def xp_f(self, stage, xps, ds, ys):
         return (100 - xps) * ds / 100 + xps
         
     def grid(self, d, xp=None):
         if xp is None:
             grid = (d * 100).int() + 1
         else:
-            new_xp = self.xp_f(xp, None, d, None)
+            new_xp = self.xp_f(None, xp, d, None)
             grid = (new_xp * 100).int() + 1
         grid = torch.minimum(grid, torch.tensor(10000))
         return grid

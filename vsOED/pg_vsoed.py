@@ -718,7 +718,10 @@ class PGvsOED(VSOED):
             t1 = time.time()
             self.asses(self.n_newtraj, self.design_noise_scale, True, self.use_PCE, self.use_PCE_incre, self.n_contrastive_sample)
             self.dowel.logger.push_prefix(f'epoch #{self.update} | ')
-            self.dowel.tabular.clear()
+            try:
+                self.dowel.tabular.clear()
+            except:
+                pass
             rewards = self.rewards_hist.sum(-1)
             self.dowel.tabular.record('Epoch', str(self.update))
             self.dowel.tabular.record('Reward/MeanReward', str(rewards.mean().item()))

@@ -5,7 +5,7 @@ import os,sys,inspect
 # current_dir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 # parent_dir = os.path.dirname(os.path.dirname(current_dir))
 parent_dir = '/scratch/xhuan_root/xhuan1/wgshen/vsOED/'
-sys.path.insert(0, parent_dir) 
+# sys.path.insert(0, parent_dir) 
 
 import numpy as np
 # from scipy.stats import norm, beta, dirichlet
