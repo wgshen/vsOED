@@ -705,9 +705,6 @@ class PGvsOED(VSOED):
         buffer['params'] = self.params.to(self.buffer_device)
         buffer['ds_hist'] = self.ds_hist.to(self.buffer_device)
         buffer['ys_hist'] = self.ys_hist.to(self.buffer_device)
-        
-       # print('self.buffer_device', self.buffer_device)
-        
         buffer['xps_hist'] = self.xps_hist.to(self.buffer_device)
         if self.use_PCE:
             buffer['rewards_hist'] = self.rewards_hist.to(self.buffer_device)
