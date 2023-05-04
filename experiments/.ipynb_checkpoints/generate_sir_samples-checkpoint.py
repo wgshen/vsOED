@@ -145,8 +145,9 @@ if __name__ == "__main__":
     parser.add_argument("--num-train-batch", default=10, type=int)
     parser.add_argument("--num-test-sample", default=12000, type=int)
     parser.add_argument("--num-test-batch", default=30, type=int)
+    parser.add_argument("--random-seed", default=1, type=int)
     parser.add_argument("--device", default="cuda", type=str)
-    parser.add_argument("--save-folder", default="./SIR/", type=str)
+    parser.add_argument("--save-folder", default="./SIR/sir_sde_data", type=str)
 
 #     if not os.path.exists("data"):
 #         os.makedirs("data")
@@ -162,7 +163,7 @@ if __name__ == "__main__":
     num_batch = args.num_train_batch
     print(f'Generating {num_batch} training batches, each with {num_samples} trials')
     foldername = parent_folder + "/train_data"
-    seed = 3128564
+    seed = 3128564 * args.random_seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)
@@ -178,7 +179,7 @@ if __name__ == "__main__":
     num_batch = args.num_test_batch
     print(f'Generating {num_batch} testing batches, each with {num_samples} trials')
     foldername = parent_folder + "/test_data"
-    seed = 84189743
+    seed = 84189743 * args.random_seed
     torch.manual_seed(seed)
     np.random.seed(seed)
     random.seed(seed)

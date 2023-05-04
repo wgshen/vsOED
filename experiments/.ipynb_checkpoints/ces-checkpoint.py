@@ -21,30 +21,30 @@ if __name__ == "__main__":
     parser.add_argument("--share-interm-net", default=False, type=bool) # True or False
     parser.add_argument("--post-net-type", default='GMM', type=str) # 'GMM' or 'NFs'
     parser.add_argument("--n-mixture", default=8, type=int) # Number of Gaussian mixture
-    parser.add_argument("--post-lr", default=1e-4, type=float) 
-    parser.add_argument("--post-gamma", default=0.99999, type=float) 
-    parser.add_argument("--actor-lr", default=5e-7, type=float) 
-    parser.add_argument("--actor-gamma", default=0.99999, type=float) 
-    parser.add_argument("--critic-lr", default=1e-4, type=float) 
-    parser.add_argument("--critic-gamma", default=0.99999, type=float) 
+    parser.add_argument("--post-lr", default=1e-3, type=float) 
+    parser.add_argument("--post-gamma", default=0.9999, type=float) 
+    parser.add_argument("--actor-lr", default=1e-3, type=float) 
+    parser.add_argument("--actor-gamma", default=0.9999, type=float) 
+    parser.add_argument("--critic-lr", default=1e-3, type=float) 
+    parser.add_argument("--critic-gamma", default=0.9999, type=float) 
     
-    parser.add_argument("--n-update", default=100001, type=int) 
-    parser.add_argument("--n-newtraj", default=100, type=int) 
-    parser.add_argument("--n-batch", default=1000, type=int) 
+    parser.add_argument("--n-update", default=10001, type=int) 
+    parser.add_argument("--n-newtraj", default=1000, type=int) 
+    parser.add_argument("--n-batch", default=10000, type=int) 
     parser.add_argument("--n-buffer-init-batch", default=2, type=int) 
-    parser.add_argument("--n-buffer-max", default=int(1e5), type=int) 
+    parser.add_argument("--n-buffer-max", default=int(1e6), type=int) 
     parser.add_argument("--buffer-device", default='cuda', type=str) 
     parser.add_argument("--discount", default=1.0, type=float) 
     parser.add_argument("--n-critic-update", default=5, type=int) 
     parser.add_argument("--n-post-approx-update", default=5, type=int) 
     parser.add_argument("--target-lr", default=0.1, type=float) 
     parser.add_argument("--design-noise-scale", default=0.05, type=float) 
-    parser.add_argument("--design-noise-decay", default=0.99998, type=float) 
-    parser.add_argument("--transition", default=30000, type=int) 
+    parser.add_argument("--design-noise-decay", default=0.9998, type=float) 
+    parser.add_argument("--transition", default=5000, type=int) 
     
     parser.add_argument("--save-folder", default='./results/ces/', type=str)
     parser.add_argument("--log-every", default=100, type=int)
-    parser.add_argument("--save-every", default=10000, type=int)
+    parser.add_argument("--save-every", default=1000, type=int)
     
     args = parser.parse_args()
     

@@ -43,7 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--design-noise-decay", default=0.9999, type=float) 
     parser.add_argument("--transition", default=10000, type=int) 
     
-    parser.add_argument("--data-folder", default='./SIR/sir_sde_data/', type=str)
+    parser.add_argument("--data-folder", default='./SIR/sir_sde_data_1s/', type=str)
     parser.add_argument("--save-folder", default='./results/sir/', type=str)
     parser.add_argument("--log-every", default=100, type=int)
     parser.add_argument("--save-every", default=1000, type=int)
