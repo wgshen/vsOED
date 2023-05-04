@@ -147,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--num-test-batch", default=30, type=int)
     parser.add_argument("--random-seed", default=1, type=int)
     parser.add_argument("--device", default="cuda", type=str)
-    parser.add_argument("--save-folder", default="./SIR/sir_sde_data", type=str)
+    parser.add_argument("--save-folder", default="./SIR/sir_sde_data/", type=str)
 
 #     if not os.path.exists("data"):
 #         os.makedirs("data")
