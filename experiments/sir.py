@@ -43,7 +43,7 @@ if __name__ == "__main__":
     parser.add_argument("--design-noise-decay", default=0.9999, type=float) 
     parser.add_argument("--transition", default=10000, type=int) 
     
-    parser.add_argument("--data-folder", default='./SIR/sir_sde_data_1s/', type=str)
+    parser.add_argument("--data-folder", default='./SIR/sir_sde_data_1/', type=str)
     parser.add_argument("--save-folder", default='./results/sir/', type=str)
     parser.add_argument("--log-every", default=100, type=int)
     parser.add_argument("--save-every", default=1000, type=int)
@@ -132,6 +132,7 @@ if __name__ == "__main__":
         pass
     dowel.logger.push_prefix(f'[SIR-{n_stage}stage] ')
     dowel.logger.log('Experiment id: ' + str(id))
+    dowel.logger.log('Data from ' + data_folder)
     dowel.logger.log('Stored at ' + save_folder)
     dowel.logger.log('Random seed:  ' + str(random_state))
     dowel.logger.log('Device: ' + str(device))

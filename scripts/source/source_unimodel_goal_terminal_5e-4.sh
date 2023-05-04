@@ -12,9 +12,9 @@ id2=$2
 post=$3
 
 for id in $(seq $id1 $id2); do
-    for h in 10 7 5 4 3 2 1; do
+    for h in 30 20 15 10 5 1; do
         if [ $post = 'GMM' ]; then
-            python ./experiments/sir.py --id=$id --n-stage=$h --post-net-type=$post --data-folder=./SIR/sir_sde_data_"$((id+1))" --save-folder=./results/sir/"$post"/terminal_id"$id"_h"$h"/
+            python ./experiments/source.py --id=$id --n-stage=$h --include-goal=True --poi-weight=0 --goal-weight=1 --actor-lr=5e-4 --post-net-type=$post --save-folder=./results/source/unimodel/goal/"$post"_5e-4/terminal_id"$id"_h"$h"/
         else
             echo "NFs"
         fi
