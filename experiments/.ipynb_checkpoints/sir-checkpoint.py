@@ -137,6 +137,7 @@ if __name__ == "__main__":
     dowel.logger.log('Random seed:  ' + str(random_state))
     dowel.logger.log('Device: ' + str(device))
     dowel.logger.log('dtype: ' + str(dtype))
+    dowel.logger.log('args: ' + str(args))
 
     post_approx_params = {
         'n_stage': n_stage, 
