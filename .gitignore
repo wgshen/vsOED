@@ -3,3 +3,4 @@ vsOED_env/
 notebooks/*/
 results/
 experiments/*/
+CONV_DIFF/
