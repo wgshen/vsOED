@@ -15,9 +15,32 @@ pip install -r requirements.txt
 ## PoI inference OED
 ### GMM
 #### Terminal information gain
-
+```
+python ./experiments/source.py --id=0 --n-stage=30 --actor-lr=5e-4 --post-net-type=GMM --save-folder=./results/source/unimodel/poi/GMM/terminal_id0_h30/
+```
 #### Incremental information gain
-
+```
+python ./experiments/source.py --id=0 --n-stage=30 --discount=0.9 --transition=0 --post-net-type=GMM --n-incre=30 --save-folder=./results/source/unimodel/poi/GMM/incre_id0_h30/
+```
+### NFs
+#### Terminal information gain
+```
+python ./experiments/source.py --id=0 --n-stage=30 --post-net-type=NFs --n-trans=4 --Split1 0 3 --Split2 1 2 --save-folder=./results/source/unimodel/poi/NFs/terminal_id0_h30/ --n-update=10
+```
+#### Incremental information gain
+```
+python ./experiments/source.py --id=0 --n-stage=30 --discount=0.9 --transition=0 --post-net-type=NFs --n-incre=30 --n-trans=4 --Split1 0 3 --Split2 1 2 --save-folder=./results/source/unimodel/poi/NFs/incre_id0_h30/ --n-update=10
+```
+## QoI goal-oriented OED
+### GMM
+#### Terminal information gain
+```
+python ./experiments/source.py --id=0 --n-stage=30 --include-goal=True --poi-weight=0 --goal-weight=1 --actor-lr=5e-4 --post-net-type=GMM --save-folder=./results/source/unimodel/goal/GMM/terminal_id0_h30/
+```
+#### Incremental information gain
+```
+python ./experiments/source.py --id=0 --n-stage=30 --include-goal=True --poi-weight=0 --goal-weight=1 --discount=0.9 --transition=0 --post-net-type=GMM --n-incre=30 --save-folder=./results/source/unimodel/goal/GMM/incre_id0_h30/
+```
 
 # CES experiment
 ## GMM
