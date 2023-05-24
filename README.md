@@ -25,11 +25,11 @@ python ./experiments/source.py --id=0 --n-stage=30 --discount=0.9 --transition=0
 ### NFs
 #### Terminal information gain
 ```
-python ./experiments/source.py --id=0 --n-stage=30 --post-net-type=NFs --n-trans=4 --Split1 0 3 --Split2 1 2 --save-folder=./results/source/unimodel/poi/NFs/terminal_id0_h30/ --n-update=10
+python ./experiments/source.py --id=0 --n-stage=30 --post-net-type=NFs --n-trans=4 --Split1 0 3 --Split2 1 2 --save-folder=./results/source/unimodel/poi/NFs/terminal_id0_h30/
 ```
 #### Incremental information gain
 ```
-python ./experiments/source.py --id=0 --n-stage=30 --discount=0.9 --transition=0 --post-net-type=NFs --n-incre=30 --n-trans=4 --Split1 0 3 --Split2 1 2 --save-folder=./results/source/unimodel/poi/NFs/incre_id0_h30/ --n-update=10
+python ./experiments/source.py --id=0 --n-stage=30 --discount=0.9 --transition=0 --post-net-type=NFs --n-incre=30 --n-trans=4 --Split1 0 3 --Split2 1 2 --save-folder=./results/source/unimodel/poi/NFs/incre_id0_h30/
 ```
 ## QoI goal-oriented OED
 ### GMM
@@ -83,5 +83,5 @@ python ./experiments/sir.py --id=0 --n-stage=10 --post-net-type=NFs --n-trans=10
 ## Model discrimination OED (other OED scenarios are omitted here)
 ### GMM
 ```
-python ./experiments/conv_diff.py --id=0 --n-stage=10 --model='multi' --include-goal=False --include-cost=True --cost-ratio=0.1 --model-weight=1 --poi-weight=0 --goal-weight=0 --n-incre=1 --discount=1 --actor-lr=5e-4 --post-net-type=GMM --save-folder=./results/conv_diff/multimodel/model_cost_0.1/GMM_5e-4/terminal_id0_h10/ --n-update=10
+python ./experiments/conv_diff.py --id=0 --n-stage=10 --model='multi' --include-goal=False --include-cost=True --cost-ratio=0.1 --model-weight=1 --poi-weight=0 --goal-weight=0 --n-incre=1 --discount=1 --actor-lr=5e-4 --post-net-type=GMM --save-folder=./results/conv_diff/multimodel/model_cost_0.1/GMM/terminal_id0_h10/ --n-update=10
 ```
