@@ -42,6 +42,19 @@ python ./experiments/source.py --id=0 --n-stage=30 --include-goal=True --poi-wei
 python ./experiments/source.py --id=0 --n-stage=30 --include-goal=True --poi-weight=0 --goal-weight=1 --discount=0.9 --transition=0 --post-net-type=GMM --n-incre=30 --save-folder=./results/source/unimodel/goal/GMM/incre_id0_h30/
 ```
 
+# Source location finding experiment (multi-model)
+## Model discrimination OED (other OED scenarios are omitted)
+### GMM
+#### Terminal information gain
+```
+python ./experiments/source.py --model='multi' --model-weight=1 --poi-weight=0 --goal-weight=0 --id=0 --n-stage=30 --actor-lr=2e-4 --post-net-type=GMM --save-folder=./results/source/multimodel/model/GMM/terminal_id0_h30/ --n-update=10
+```
+#### Incremental information gain
+```
+python ./experiments/source.py --model='multi' --model-weight=1 --poi-weight=0 --goal-weight=0 --id=0 --n-stage=30 --n-incre=30 --discount=0.9 --transition=0 --post-net-type=GMM --save-folder=./results/source/multimodel/model/GMM/incre_id0_h30/ -n-update=10
+```
+
+
 # CES experiment
 ## GMM
 ```
