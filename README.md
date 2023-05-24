@@ -43,15 +43,15 @@ python ./experiments/source.py --id=0 --n-stage=30 --include-goal=True --poi-wei
 ```
 
 # Source location finding experiment (multi-model)
-## Model discrimination OED (other OED scenarios are omitted)
+## Model discrimination OED (other OED scenarios are omitted here)
 ### GMM
 #### Terminal information gain
 ```
-python ./experiments/source.py --model='multi' --model-weight=1 --poi-weight=0 --goal-weight=0 --id=0 --n-stage=30 --actor-lr=2e-4 --post-net-type=GMM --save-folder=./results/source/multimodel/model/GMM/terminal_id0_h30/ --n-update=10
+python ./experiments/source.py --model='multi' --model-weight=1 --poi-weight=0 --goal-weight=0 --id=0 --n-stage=30 --actor-lr=2e-4 --post-net-type=GMM --save-folder=./results/source/multimodel/model/GMM/terminal_id0_h30/
 ```
 #### Incremental information gain
 ```
-python ./experiments/source.py --model='multi' --model-weight=1 --poi-weight=0 --goal-weight=0 --id=0 --n-stage=30 --n-incre=30 --discount=0.9 --transition=0 --post-net-type=GMM --save-folder=./results/source/multimodel/model/GMM/incre_id0_h30/ -n-update=10
+python ./experiments/source.py --model='multi' --model-weight=1 --poi-weight=0 --goal-weight=0 --id=0 --n-stage=30 --n-incre=30 --discount=0.9 --transition=0 --post-net-type=GMM --save-folder=./results/source/multimodel/model/GMM/incre_id0_h30/
 ```
 
 
@@ -77,4 +77,11 @@ python ./experiments/sir.py --id=0 --n-stage=10 --post-net-type=GMM --actor-lr=5
 ## NFs
 ```
 python ./experiments/sir.py --id=0 --n-stage=10 --post-net-type=NFs --n-trans=10 --actor-lr=5e-4 --critic-lr=1e-3  --post-lr=1e-3 --data-folder=./SIR/sir_sde_data_1 --save-folder=./results/sir/NFs/terminal_id0_h10/
+```
+
+# Convection-diffusion experiment
+## Model discrimination OED (other OED scenarios are omitted here)
+### GMM
+```
+python ./experiments/conv_diff.py --id=0 --n-stage=10 --model='multi' --include-goal=False --include-cost=True --cost-ratio=0.1 --model-weight=1 --poi-weight=0 --goal-weight=0 --n-incre=1 --discount=1 --actor-lr=5e-4 --post-net-type=GMM --save-folder=./results/conv_diff/multimodel/model_cost_0.1/GMM_5e-4/terminal_id0_h10/ --n-update=10
 ```
