@@ -12,4 +12,6 @@ pip install -r requirements.txt
 ```
 # SIR experiment
 Please first generate training data and testing data:
+```
 python ./experiments/generate_sir_samples.py
+```
