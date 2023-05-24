@@ -12,10 +12,11 @@ pip install -r requirements.txt
 ```
 
 # Source location finding experiment (uni-model)
-## GMM
-### Terminal information gain
+## PoI inference OED
+### GMM
+#### Terminal information gain
 
-### Incremental information gain
+#### Incremental information gain
 
 
 # CES experiment
