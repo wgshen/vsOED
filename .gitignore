@@ -4,3 +4,4 @@ notebooks/*/
 results/
 experiments/*/
 CONV_DIFF/
+.DS_Store
