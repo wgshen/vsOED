@@ -6,4 +6,3 @@ scipy==1.5.4
 joblib==1.1.0
 dowel==0.0.3
 torchsde==0.2.5
-emcee==3.1.1

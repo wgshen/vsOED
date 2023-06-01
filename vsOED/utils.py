@@ -44,9 +44,6 @@ def tmp_fun(*args, **kws):
         return
         
 # logpdf of independent normal distribution.
-# x is of size (n_sample, n_param or n_obs).
-# loc and scale are int or numpy.ndarray of size n_param or n_obs.
-# output is of size n_sample.
 def norm_logpdf(x, loc=0, scale=1):
     if isinstance(scale, (int, float)):
         scale = torch.tensor(scale)
@@ -102,13 +99,17 @@ class Encoder(nn.Module):
         else:
             return current_sum
 
+# initialize the encoder net
 def initialize_encoder(encoder_dimns, activate=nn.ReLU):
     return Encoder(encoder_dimns, activate)
 
-def get_encoded_states(encoder_net, ds_hist, ys_hist, xps_hist, return_all_stages):
+# pass the input data through the encoder network to obtain encoded states
+def get_encoded_states(encoder_net, ds_hist, ys_hist, 
+                       xps_hist, return_all_stages):
     assert ds_hist.shape[1] == ys_hist.shape[1]
     assert xps_hist.shape[1] == ds_hist.shape[1] + 1
-    xbs_encoded = encoder_net(ds_hist, ys_hist, xps_hist[:, :-1], return_all_stages)
+    xbs_encoded = encoder_net(ds_hist, ys_hist, 
+                              xps_hist[:, :-1], return_all_stages)
     if return_all_stages:
         xps = xps_hist
     else:
@@ -157,9 +158,9 @@ class Net(nn.Module):
         return x
 
 
-#############################################
-# https://github.com/toshas/torch_truncnorm #
-#############################################
+###########################################################
+# Copied from https://github.com/toshas/torch_truncnorm   #
+###########################################################
 class TruncatedStandardNormal(Distribution):
     """
     Truncated Standard Normal distribution
@@ -178,7 +179,8 @@ class TruncatedStandardNormal(Distribution):
             batch_shape = torch.Size()
         else:
             batch_shape = self.a.size()
-        super(TruncatedStandardNormal, self).__init__(batch_shape, validate_args=validate_args)
+        super(TruncatedStandardNormal, self).__init__(batch_shape, 
+            validate_args=validate_args)
         if self.a.dtype != self.b.dtype:
             raise ValueError('Truncation bounds types are different')
         if any((self.a >= self.b).view(-1,).tolist()):
@@ -194,9 +196,11 @@ class TruncatedStandardNormal(Distribution):
         self._log_Z = self._Z.log()
         little_phi_coeff_a = torch.nan_to_num(self.a, nan=math.nan)
         little_phi_coeff_b = torch.nan_to_num(self.b, nan=math.nan)
-        self._lpbb_m_lpaa_d_Z = (self._little_phi_b * little_phi_coeff_b - self._little_phi_a * little_phi_coeff_a) / self._Z
+        self._lpbb_m_lpaa_d_Z = (self._little_phi_b * little_phi_coeff_b 
+            - self._little_phi_a * little_phi_coeff_a) / self._Z
         self._mean = -(self._little_phi_b - self._little_phi_a) / self._Z
-        self._variance = 1 - self._lpbb_m_lpaa_d_Z - ((self._little_phi_b - self._little_phi_a) / self._Z) ** 2
+        self._variance = 1 - self._lpbb_m_lpaa_d_Z - ((self._little_phi_b 
+            - self._little_phi_a) / self._Z) ** 2
         self._entropy = CONST_LOG_SQRT_2PI_E + self._log_Z - 0.5 * self._lpbb_m_lpaa_d_Z
 
     @constraints.dependent_property
@@ -246,7 +250,8 @@ class TruncatedStandardNormal(Distribution):
 
     def rsample(self, sample_shape=torch.Size()):
         shape = self._extended_shape(sample_shape)
-        p = torch.empty(shape, device=self.a.device).uniform_(self._dtype_min_gt_0, self._dtype_max_lt_1)
+        p = torch.empty(shape, device=self.a.device).uniform_(self._dtype_min_gt_0, 
+            self._dtype_max_lt_1)
         return self.icdf(p)
 
 class TruncatedNormal(TruncatedStandardNormal):

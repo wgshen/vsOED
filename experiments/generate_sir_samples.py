@@ -11,6 +11,9 @@ import random
 
 from tqdm import trange
 
+#######################################################################
+# sir sde solver copied from https://github.com/desi-ivanova/idad     #
+#######################################################################
 
 # needed for torchsde
 sys.setrecursionlimit(1500)
@@ -55,7 +58,7 @@ def solve_sir_sdes(
     grid=10000,
     savegrad=False,
     save=False,
-    foldername="/scratch/xhuan_root/xhuan1/wgshen/vsOED/SIR/sir_sde_data/train_data",
+    foldername="./SIR/sir_sde_data/train_data",
     filename="sir_sde_data.pt",
     params=None,
     theta_loc=None,

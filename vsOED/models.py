@@ -2,7 +2,11 @@ import torch
 import math
 from .utils import *
 
+
 class SOURCE(object):
+    """
+    Model of the source location finding problem.
+    """
     def __init__(self, multimodel=False, include_nuisance=False, include_goal=False):
         self.multimodel = multimodel
         self.include_nuisance = include_nuisance
@@ -92,11 +96,6 @@ class SOURCE(object):
             return torch.log(torch.abs(flux))
     
     def loglikeli(self, stage, ys, params, ds, xps=None, true_param=None):
-        """
-        y : (n or 1, n_obs)
-        theta : (n or 1, n_param)
-        d : (n or 1, n_design)
-        """
         with torch.no_grad():
             if true_param is None or not self.multimodel:
                 idxs = torch.arange(len(params))
@@ -106,9 +105,6 @@ class SOURCE(object):
             mu, sigma = self.deterministic(params, ds, xps)
             if len(ys) == 1:
                 ys = ys.expand(len(params), -1)
-            # normal = torch.distributions.Normal(mu, sigma)
-            # log_prob = normal.log_prob(ys)
-            # log_prob = log_prob.sum(-1)
             log_prob = norm_logpdf(ys, mu, sigma)
             return log_prob
     
@@ -163,7 +159,11 @@ class SOURCE(object):
     def reward_fun(self, *args, **kws):
         return 0
 
+
 class CES(object):
+    """
+    Model of the CES problem.
+    """
     def __init__(self):
         self.beta = torch.distributions.beta.Beta(1, 1)
         self.dirichlet = torch.distributions.dirichlet.Dirichlet(torch.tensor([1.0, 1.0, 1.0]))
@@ -202,11 +202,6 @@ class CES(object):
             return y
     
     def loglikeli(self, stage, y, theta, d, xp=None, true_theta=None):
-        """
-        y : (n or 1, n_obs)
-        theta : (n or 1, n_param)
-        d : (n or 1, n_design)
-        """
         with torch.no_grad():
             crit = 1e-40
             epsilon = 2**(-22)
@@ -238,18 +233,9 @@ class CES(object):
             log_prob[idxs_lower] = lower_logcdf[idxs_lower]
             log_prob[mask_nan] = -1000000
             log_prob = log_prob.sum(-1)
-#         print(log_prob.max())
             return log_prob
     
-    
     def log_poi_prior(self, params):
-        """
-        A function to evaluate the prior logpdf of parameter samples.
-        
-        Parameters
-        ----------
-        prior_samples : numpy.ndarray of size (n_sample, n_param)
-        """
         with torch.no_grad():
             rho = params[:, 0]
             alpha = params[:, 1:3]
@@ -266,27 +252,21 @@ class CES(object):
 
             return rho_logpdf + alpha_logpdf + logu_logpdf
         
-    
     def rvs(self, n_sample):
-        """
-        A function to generate samples from the prior.
-        
-        Parameters
-        ----------
-        n_sample : int
-        """
         with torch.no_grad():
             rho = self.beta.rsample((n_sample, 1))
             alpha = self.dirichlet.rsample((n_sample, ))
             logu = self.normal.rsample((n_sample, 1))
             return torch.cat([rho, alpha[:, :2], logu], dim=-1)
         
-        
     def reward_fun(self, *args, **kws):
         return 0
     
     
 class SIR(object):
+    """
+    Model of the SIR problem.
+    """
     def __init__(self, foldername):
         self.foldername = foldername
         self.mode = 'train'
@@ -336,16 +316,10 @@ class SIR(object):
     
     def load_test_data(self, foldername):
         self.data = torch.load(self.foldername + f'/test_data/sir_test_samples.pt')
-        # self.hists = torch.load(self.foldername + f'test_data/sir_test_total_hists.pt')
         self.mode = 'eval'
         self.reset_test()
         
     def loglikeli(self, stage, y, theta, d, xp):
-        """
-        y : (n or 1, n_obs)
-        theta : (n or 1, n_param)
-        d : (n or 1, n_design)
-        """
         assert self.mode == 'eval'
         with torch.no_grad():
             if stage == 0:
@@ -389,8 +363,10 @@ class SIR(object):
         return 0
     
     
-    
 class CONV_DIFF(object):
+    """
+    Model of the convection-diffusion problem.
+    """
     def __init__(self, multimodel=False, include_str_wid=False, include_goal=False, include_cost=False, cost_ratio=0.2):
         self.multimodel = multimodel
         self.include_str_wid = include_str_wid
@@ -415,12 +391,19 @@ class CONV_DIFF(object):
             self.model_nets = torch.load(fname)
             fname = data_folder + f'model_2/flux_net.pt'
             self.flux_net = torch.load(fname)
-    
+  
     def get_n_param(self, model):
         if model == -1:
             return self.get_n_param(1)
         else:
             return (model + 1) * 2 + 2 + 2 * self.include_str_wid
+        
+    def get_input_idxs(self, model):
+        idxs = list(range(1, 1 + (model + 1) * 2))
+        idxs += [7, 8]
+        if self.include_str_wid:
+            idxs += [9, 10]
+        return idxs
 
     def deterministic(self, stage, params, ds, xps=None):
 
@@ -438,8 +421,9 @@ class CONV_DIFF(object):
             for model in range(3):
                 idxs = model_idxs == model
                 n_param = self.get_n_param(model)
+                input_idxs = self.get_input_idxs(model)
                 inputs = torch.zeros(idxs.sum(), n_param + 2)
-                inputs[:, :n_param] = params[idxs, 1:1+n_param]
+                inputs[:, :n_param] = params[idxs][:, input_idxs]
                 inputs[:, n_param:] = ds if len(ds) == 1 else ds[idxs]
                 G[idxs] = self.model_nets[model][stage](inputs)
                 
@@ -462,16 +446,11 @@ class CONV_DIFF(object):
                 for model in range(3):
                     idxs = model_idxs == model
                     n_param = self.get_n_param(model)
-                    flux[idxs] = self.flux_nets[model](params[idxs, 1:1+n_param])
+                    input_idxs = self.get_input_idxs(model)
+                    flux[idxs] = self.flux_nets[model](params[idxs][:, input_idxs])
             return torch.log(torch.abs(flux) + 1e-27)
-            # return flux
     
     def loglikeli(self, stage, ys, params, ds, xps=None, true_param=None):
-        """
-        y : (n or 1, n_obs)
-        theta : (n or 1, n_param)
-        d : (n or 1, n_design)
-        """
         with torch.no_grad():
             if true_param is None or not self.multimodel:
                 idxs = torch.arange(len(params))
@@ -481,9 +460,6 @@ class CONV_DIFF(object):
             mu, sigma = self.deterministic(stage, params, ds, xps)
             if len(ys) == 1:
                 ys = ys.expand(len(params), -1)
-            # normal = torch.distributions.Normal(mu, sigma)
-            # log_prob = normal.log_prob(ys)
-            # log_prob = log_prob.sum(-1)
             log_prob = norm_logpdf(ys, mu, sigma)
             return log_prob
     

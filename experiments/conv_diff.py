@@ -58,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--design-noise-scale", default=0.05, type=float) 
     parser.add_argument("--design-noise-decay", default=0.9999, type=float) 
     parser.add_argument("--transition", default=10000, type=int) 
+    parser.add_argument("--frozen", default=-1, type=int) 
     
     parser.add_argument("--save-folder", default='./results/conv_diff/', type=str)
     parser.add_argument("--log-every", default=100, type=int)
@@ -287,7 +288,7 @@ if __name__ == "__main__":
     use_PCE_incre = None
     n_contrastive_sample = None
     transition = args.transition
-    frozen = -1
+    frozen = args.frozen
     save_every = args.save_every
     restart = False
 
@@ -344,9 +345,6 @@ if __name__ == "__main__":
     dowel.logger.push_prefix(f'[CONV-DIFF-{n_stage}stage] ')
     vsoed.train(**vsoed_train_params)
     torch.save(torch.tensor(vsoed.update_hist), save_folder + '/update_hist.pt')
-    # set_random_seed(EVAL_SEEDS[id])
-    # dowel.logger.log('Evaluating using contrastive samples...')
-    # vsoed.asses(2000, n_contrastive_sample=int(1e6), return_all=True, return_nkld_rewards=True, dowel=dowel, save_path=save_folder + '/evaluation.pt')
     set_random_seed(EVAL_SEEDS[id])
     dowel.logger.log('Evaluating using post approx...')
     vsoed.asses(int(1e6), use_PCE=False, return_all=True, dowel=dowel,return_nkld_rewards=True, save_path=save_folder + '/evaluation_with_post_approx.pt')

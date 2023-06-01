@@ -22,6 +22,9 @@ if __name__ == "__main__":
     parser.add_argument("--share-interm-net", default=False, type=bool) # True or False
     parser.add_argument("--post-net-type", default='GMM', type=str) # 'GMM' or 'NFs'
     parser.add_argument("--n-mixture", default=8, type=int) # Number of Gaussian mixture
+    parser.add_argument("--n-trans", default=4, type=int)         ###########################
+    # parser.add_argument("--Split1",  nargs="+", default=[None])   ###########################
+    # parser.add_argument("--Split2",  nargs="+", default=[None])   ###########################
     parser.add_argument("--post-lr", default=1e-3, type=float) 
     parser.add_argument("--post-gamma", default=0.9999, type=float) 
     parser.add_argument("--actor-lr", default=3e-4, type=float) 
@@ -105,6 +108,13 @@ if __name__ == "__main__":
 
     use_NFs = args.post_net_type != 'GMM'
     n_mixture = args.n_mixture
+    n_trans   = args.n_trans                     ##################################
+    
+#     args.Split1 = [int(x) if x else x for x in args.Split1]
+#     args.Split2 = [int(x) if x else x for x in args.Split2]    
+    
+#     Split1    = args.Split1                      ##################################
+#     Split2    = args.Split2                      ##################################
     activate = nn.ReLU
 
     log_every = args.log_every
@@ -153,6 +163,9 @@ if __name__ == "__main__":
         'max_sigmas': max_sigmas,
         'truncnorm_info': truncnorm_info,
         'n_mixture': n_mixture,
+        'n_trans' : n_trans,
+        # 'Split1'  : Split1,
+        # 'Split2'  : Split2,
         'activate': activate,
         'prior': prior,
         'n_incre': n_incre,

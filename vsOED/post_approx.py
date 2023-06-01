@@ -3,12 +3,145 @@ import torch.nn as nn
 import torch.optim as optim
 from .utils import *
 
-class NFs(nn.Module):
-    def __init__(self, **kws):
-        pass
+class FCNN(nn.Module):
+    """
+    Simple fully connected neural network.
+    """
+    def __init__(self, in_dim, out_dim, nodes, act): 
+        super().__init__()
+        
+        self.layers = len(nodes)
+        modules     = []
+        modules.append( nn.Linear(in_dim, nodes[0]) )
+        modules.append( act)
+        
+        for i in range(self.layers-1):
+            modules.append( nn.Linear(nodes[i], nodes[i+1]) )
+            modules.append( act)
+            
+        modules.append( nn.Linear(nodes[self.layers-1], out_dim)) 
+        self.network = nn.Sequential(*modules)
 
-    def forward(self, inputs, thetas):
-        return 0
+    def forward(self, x):
+        return self.network(x)
+
+class cINN(nn.Module):  
+    """
+    The class for conditional Invertible Neural Network
+    Parameters
+    ----------
+    n_theta: int
+        Dimension of parameter space
+    n_input : int
+        Equals to the number of experiments  * (the dimension of observation + the dimension of design space)
+    nodes_s; nodes_t : list
+        The hidden layers and the activation function in s and t networks  
+    act: torch.nn
+        Activation functions
+    Split1, Split2: list
+        List of indexes that partition pois into two vectors of similar sizes 
+    alpha: int
+        Limit the value in exp(s()) not greater than alpha, avoid overflow
+    Methods
+    -------
+    forward()
+        Produces the transformed parameter in Gaussian space and the log-determinant along the transformation.
+    """
+    def __init__(self, n_theta, n_input,
+                    nodes_s, nodes_t, act,  # the hidden layers and the activation function in s and t networks 
+                    Split1, Split2,         # Split: list of indexes that partition pois into two vectors of similar sizes 
+                    network=FCNN,
+                    alpha = None            
+                    ):
+        super().__init__()
+        self.theta_dim  = n_theta
+        self.input_dim  = n_input 
+        self.Split1     = Split1 
+        self.Split2     = Split2 
+
+        self.s1         = network( self.input_dim + len(self.Split2), len(self.Split1), nodes_s, act) 
+        self.t1         = network( self.input_dim + len(self.Split2), len(self.Split1), nodes_t, act)
+        self.s2         = network( self.input_dim + len(self.Split1), len(self.Split2), nodes_s, act)
+        self.t2         = network( self.input_dim + len(self.Split1), len(self.Split2), nodes_t, act)
+        self.alpha      = alpha
+
+    def forward(self, inputs, thetas):             
+        theta1, theta2  = thetas[:, self.Split1], thetas[:, self.Split2]
+        theta2_y        = torch.cat((inputs, theta2), 1)  
+        
+        s1_trans        = self.s1(theta2_y)
+        if self.alpha is not None:
+            s1_trans = (2 * self.alpha / torch.pi) * torch.atan(s1_trans / self.alpha)
+        t1_trans        = self.t1(theta2_y)
+        theta1_trans    = theta1 * torch.exp(s1_trans) + t1_trans 
+
+        theta1_trans_y  = torch.cat((inputs, theta1_trans), 1)    
+        s2_trans        = self.s2(theta1_trans_y)
+        if self.alpha is not None:
+            s2_trans = (2 * self.alpha / torch.pi) * torch.atan(s2_trans / self.alpha)
+        t2_trans        = self.t2(theta1_trans_y)
+        theta2_trans    = theta2 * torch.exp(s2_trans) + t2_trans  
+        
+        transformed_theta = torch.cat((theta1_trans, theta2_trans), 1)
+        log_det           = torch.sum(s1_trans, axis = 1) +  torch.sum(s2_trans, axis = 1)
+        
+        return transformed_theta, log_det
+    
+class NFs(nn.Module):
+    """
+    The class for Normalizing flows using cINN transformation
+    Parameters
+    ----------
+    n_input : int
+        Equals to the number of experiments  * (the dimension of observation + the dimension of design space)
+    n_theta: int
+        Dimension of parameter space
+    Split1, Split2: list
+        List of indexes that partition pois into two vectors of similar sizes 
+    num_trans: int
+        The number of entire transformation on all parameters. 
+    Methods
+    -------
+    forward()
+        Produces the approximating posterior logpdf of the pameters, conditioned on the previous experimental observation and designs.
+    """
+    def __init__(self, network, n_input, n_theta, Split1, Split2, num_trans): 
+        super().__init__()
+        self.n_theta    = n_theta
+        
+        if Split1 is None:
+            self.Split1, self.Split2   = np.split(np.random.permutation(n_theta), [int(n_theta/2)])   
+        else:
+            self.Split1 =  np.array(Split1) 
+            self.Split2 =  np.array(Split2) 
+        
+        self.flows        = [cINN(n_theta, n_input, [256, 256, 256], [256, 256, 256], nn.ReLU(), self.Split1, self.Split2, network, alpha = 10) for i in range(num_trans)]
+       # self.flows        = [cINN(n_theta, n_input, [128, 128, 128], [128, 128, 128], nn.ReLU(), self.Split1, self.Split2, network, alpha = 10) for i in range(num_trans)]
+       
+       
+        self.flows_list   = nn.ModuleList(self.flows) 
+        self.feature_net  = network(n_input, n_input, [256, 256, 256], nn.ReLU())           
+     #   self.feature_net  = network(n_input, n_input, [128, 128], nn.ReLU())                ##### sir
+
+    def forward(self, inputs, thetas):                         
+        inputs_feature  = self.feature_net(inputs)      
+        thetas = thetas[:, :self.n_theta] 
+
+        m, _    = thetas.shape
+        log_det = torch.zeros(m)
+
+        for flow in self.flows_list: 
+            thetas,   ld = flow.forward(inputs_feature, thetas)                                   
+            log_det    += ld
+      
+        norm_logprob  =  torch.distributions.MultivariateNormal(torch.zeros(thetas.shape[1]), 
+                            torch.eye(thetas.shape[1])).log_prob(thetas)
+        logpdf_NF  = norm_logprob + log_det
+        logprobs   = logpdf_NF 
+        logprobs   = torch.logaddexp(logprobs, torch.tensor(math.log(1e-27)) )
+            
+        return logprobs
+
 
 class GMM_NET(nn.Module):
     def __init__(self, n_input, n_theta, n_mixture, mu_bounds, max_sigmas, truncnorm_info=None, activate=None):
@@ -48,23 +181,19 @@ class GMM_NET(nn.Module):
         sigma_layers = []
         for i in range(len(feature_dimns) - 1):
             feature_layers.append(nn.Linear(feature_dimns[i], feature_dimns[i + 1]))
-#             feature_layers.append(nn.BatchNorm1d(feature_dimns[i + 1]))
             feature_layers.append(activate())
         for i in range(len(weight_dimns) - 1):
             weight_layers.append(nn.Linear(weight_dimns[i], weight_dimns[i + 1]))
             if i < len(weight_dimns) - 2:
-#                 weight_layers.append(nn.BatchNorm1d(weight_dimns[i + 1]))
                 weight_layers.append(activate())
         weight_layers.append(nn.LogSoftmax(dim=1))
         for i in range(len(mu_dimns) - 1):
             mu_layers.append(nn.Linear(mu_dimns[i], mu_dimns[i + 1]))
             if i < len(mu_dimns) - 2:
-#                 mu_layers.append(nn.BatchNorm1d(mu_dimns[i + 1]))
                 mu_layers.append(activate())
         for i in range(len(sigma_dimns) - 1):
             sigma_layers.append(nn.Linear(sigma_dimns[i], sigma_dimns[i + 1]))
             if i < len(sigma_dimns) - 2:
-#                 sigma_layers.append(nn.BatchNorm1d(sigma_dimns[i + 1]))
                 sigma_layers.append(activate())
         self.feature_net = nn.Sequential(*feature_layers)
         self.weight_net = nn.Sequential(*weight_layers)
@@ -106,12 +235,6 @@ class GMM_NET(nn.Module):
         logweights = torch.cat([logweights, torch.zeros(len(logweights), 1)], dim=1)
         
         logprobs = torch.logsumexp(logprob_mixture + logweights, dim=-1)
-#         prob_mixture = torch.exp(logprob_mixture)
-#         weights = torch.exp(logweights)
-        
-#         probs = (prob_mixture * weights).sum(-1)
-#         probs += 1e-27
-#         logprobs = torch.log(probs)
         
         return logprobs
 
@@ -123,7 +246,8 @@ class POST_APPROX(object):
         n_goals=None, # number of goals
         model_weight=1, poi_weight=1, goal_weight=0,
         mu_bounds=None, max_sigmas=None, truncnorm_info=None, 
-        n_mixture=8, activate=None, prior=None, 
+        n_mixture=8, n_trans=4, Split1=None, Split2=None, network=FCNN,
+        activate=None, prior=None, 
         n_incre=1, share_interm_net=False,
         model_post_lrs=None, model_post_lr_scheduler_gammas=None,
         poi_post_lrs=None, poi_post_lr_scheduler_gammas=None,
@@ -199,6 +323,11 @@ class POST_APPROX(object):
         self.share_interm_net = share_interm_net
 
         self.use_NFs = use_NFs
+        if self.use_NFs:
+            self.network = network
+            self.num_trans = n_trans 
+            self.Split1   = Split1
+            self.Split2   = Split2
 
         candidate_lrs = [[1e-3] * n_incre, [1e-4] * (n_incre - 1) + [1e-3]]
         candidate_gammas = [[0.9999] * n_incre, [0.999999] * (n_incre - 1) + [0.9999]]
@@ -227,8 +356,8 @@ class POST_APPROX(object):
                 model_post_layers = []
                 for ii in range(len(model_post_dimns) - 1):
                     model_post_layers.append(nn.Linear(model_post_dimns[ii], model_post_dimns[ii + 1]))
-        #             feature_layers.append(nn.BatchNorm1d(feature_dimns[i + 1]))
-                    model_post_layers.append(activate())
+                    if ii < len(model_post_dimns) - 2:
+                        model_post_layers.append(activate())
                 model_post_layers.append(nn.LogSoftmax(dim=1))
                 if stage == stages_incre[0] or stage == stages_incre[-1] or not share_interm_net:
                     post_net = nn.Sequential(*model_post_layers)
@@ -254,7 +383,7 @@ class POST_APPROX(object):
                             post_net = GMM_NET(input_dimn, n_poi, n_mixture, mu_bounds['poi'][j], max_sigmas['poi'][j], truncnorm_info['poi'][j], activate)
                         else:
                             ###########################################
-                            post_net = NFs()
+                            post_net = NFs(self.network, input_dimn, n_poi, self.Split1, self.Split2,  self.num_trans)
                             ###########################################
                         optimizer = optim.Adam(post_net.parameters(), lr=poi_post_lrs[i])
                         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=poi_post_lr_scheduler_gammas[i])
@@ -285,7 +414,7 @@ class POST_APPROX(object):
                             post_net = GMM_NET(input_dimn, n_goal, n_mixture, mu_bounds['goal'][j], max_sigmas['goal'][j], truncnorm_info['goal'][j], activate)
                         else:
                             ###########################################
-                            post_net = NFs()
+                            post_net = NFs(self.network, input_dimn, n_goal, self.Split1, self.Split2,  self.num_trans)
                             ###########################################
                         optimizer = optim.Adam(post_net.parameters(), lr=goal_post_lrs[i])
                         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=goal_post_lr_scheduler_gammas[i])
@@ -301,6 +430,9 @@ class POST_APPROX(object):
                     self.goal_post_schedulers[stage] = post_schedulers
                 
     def form_input(self, stage, ds_hist, ys_hist):
+        """
+        Form the input of the posterior approximation network.
+        """
         if stage >= self.stages_incre[-1] or not self.share_interm_net:
             X = torch.cat([ds_hist[:, :stage+1].view(len(ds_hist), -1), 
                 ys_hist[:, :stage+1].view(len(ys_hist), -1)], dim=1)
@@ -316,6 +448,9 @@ class POST_APPROX(object):
             return torch.cat([X0, X1, X2], dim=1)
                  
     def log_post(self, stage=None, ds_hist=None, ys_hist=None, params=None, inputs=None, which='poi'):
+        """
+        Get the predictions of the posterior approximation network.
+        """
         if stage is None:
             stage = self.stages_incre[-1]
         if inputs is not None:
@@ -349,15 +484,27 @@ class POST_APPROX(object):
         return logpost
 
     def log_model_post(self, stage=None, ds_hist=None, ys_hist=None, params=None, inputs=None):
+        """
+        Get the model posterior.
+        """
         return self.log_post(stage, ds_hist, ys_hist, params, inputs, 'model')
 
     def log_poi_post(self, stage=None, ds_hist=None, ys_hist=None, params=None, inputs=None):
+        """
+        Get the PoI posterior
+        """
         return self.log_post(stage, ds_hist, ys_hist, params, inputs, 'poi')
 
     def log_goal_post(self, stage=None, ds_hist=None, ys_hist=None, params=None, inputs=None):
+        """
+        Get the QoI posterior.
+        """
         return self.log_post(stage, ds_hist, ys_hist, params, inputs, 'goal')
     
     def train(self, ds_hist, ys_hist, xps_hist, params, l, n_update=3):
+        """
+        Train the posterior approximation networks.
+        """
         for stage in self.stages_incre:
             X = self.form_input(stage, ds_hist, ys_hist)
             for t in range(n_update):
@@ -401,6 +548,9 @@ class POST_APPROX(object):
                 self.dowel.logger.log(f'log goal post after training: {log_goal_post.mean()}')
         
     def reward_fun(self, stage, ds_hist, ys_hist, xps_hist, params):
+        """
+        Calculate the information gain rewards.
+        """
         with torch.no_grad():
             if stage == 0:
                 try:
@@ -438,7 +588,3 @@ class POST_APPROX(object):
                 return self.model_weight * model_kld + self.poi_weight * poi_kld + self.goal_weight * goal_kld
             else:
                 return 0
-
-
-
-

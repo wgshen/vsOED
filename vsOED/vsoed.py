@@ -3,169 +3,6 @@ from .utils import *
 from functools import partial
 
 class VSOED(object):
-    """
-    A class for variational sequential optimal experimental design (vsOED). 
-    This class takes basic inputs (e.g., forward model, reward function, 
-    physical state transition, and dimensions of the problem, etc.) to construct 
-    a vsOED framework. However, this class does not include method functions to 
-    solve the vsOED problem.
-    This code accommodates continuous unknown parameters with user-defined 
-    prior, continuous design with upper and lower bounds, and additive Gaussian 
-    noise on observations.
-
-    Parameters
-    ----------
-    model_fun : function
-        Forward model function G_k(theta, d_k, x_{k,p}). It will be abbreviated 
-        as m_f inside this class.
-        The forward model function should take following inputs:
-            * theta, numpy.ndarray of size (n_sample or 1, n_param)
-                Parameter samples.
-            * d, numpy.ndarray of size (n_sample or 1, n_design)
-                Designs.
-            * xp, numpy.ndarray of size (n_sample or 1, n_phys_state)
-                Physical states.
-        and the output is 
-            * numpy.ndarray of size (n_sample, n_obs).
-        When the first dimension of theta, d or xp is 1, it should be augmented
-        to align with the first dimension of other inputs (i.e., we reuse it for
-        all samples).
-    n_stage : int
-        Number of experiments to be designed and conducted.
-    n_param : int
-        Dimension of parameter space, should not be greater than 3 in this
-        version because we are using grid discritization on parameter sapce.
-    n_design : int
-        Dimension of design space.
-    n_obs : int
-        Dimension of observation space.
-    design_bounds : list, tuple or numpy.ndarray of size (n_design, 2)
-        It includes the constraints of the design variable. In this version, we
-        only allow to set hard limit constraints. In the future version, we may
-        allow users to provide their own constraint function.
-        The length of design_bounds should be n_design.
-        k-th entry of design_bounds is a list, tuple or numpy.ndarray like 
-        (lower_bound, upper_bound) for the limits of k-th design variable.
-    noise_info : list, tuple or numpy.ndarray of size (n_obs, 3)
-        It includes the statistics of additive Gaussian noise.
-        The length of noise_info should be n_obs. k-th entry of noise_info is a 
-        list, tuple or numpy.ndarray including
-            * noise_loc : float or int
-            * noise_base_scale : float or int
-                It will be abbreviated as noise_b_s in this class.
-            * noise_ratio_scale : float or int
-                It will be abbreviated as noise_r_s in this class.
-        The corresponding noise will follow a gaussian distribution with mean
-        noise_loc, std (noise_base_scale + noise_ratio_scale * abs(G)).
-    reward_fun : function, optional(default=None)
-        User-provided non-KL-divergence based reward function 
-        g_k(x_k, d_k, y_k). It will be abbreviated as nlkd_rw_f inside this 
-        class.
-        The reward function should take following inputs:
-            * stage : int
-                The stage index of the experiment.
-            * xbs : None or numpy.ndarray of size 
-                   (n_traj or 1, n_grid ** n_param, n_param + 1)
-                Grid discritization of the belief state.
-            * xps : np.ndarray of size (n_traj or 1, n_phys_state)
-                The physical state.
-            * ds : np.ndarray of size (n_traj or 1, stage + 1, n_design)
-                The design variables from 0-th up to stage-th experiments.
-            * ys : np.ndarray of size (n_traj or 1, stage + 1, n_obs)
-                The observations from 0-th up to stage-th experiments.
-        and the output is 
-            * A np.ndarray of size n_traj or 1 which are the rewards.
-        Note that the information gain is computed within this class, and does
-        not needed to be included in reward_fun.
-        When reward_fun is None, the stage reward would be 0, only KL divergence
-        from the prior to the posterior will be considered.
-    phys_state_info : list, tuple or numpy.ndarray of size (3), 
-                      optional(default=None)
-        When phy_state_info is None, then there is no physical states in this 
-        sOED problem, otherwise it includes the following information of 
-        physical states:
-            * n_phys_state : int
-                Dimension of physical state.
-                It will be abbreviated as n_xp inside this class.
-            * init_phys_state : list, or tuple
-                Initial physical states.
-                It will be abbreviated as init_xp inside this class.
-                The length of init_phys_state should n_phys_state.
-                In the future, we will let phys_state_fun provide the initial 
-                physical state, such that it could be stochastic.
-            * phys_state_fun : function
-                Function to update physical state.
-                x_{k+1,p} = phys_state_fun(x_{k,p}, d_k, y_k).
-                It will be abbreviated as xp_f inside this class.
-                The physical state transition function should take following 
-                inputs:
-                    * xps : np.ndarray of size (n_traj or 1, n_phys_state)
-                        The old physical state before conducting stage-th 
-                        experiement.
-                    * stage : int
-                        The stage index of the experiment.
-                    * ds : np.ndarray of size 
-                           (n_traj or 1, stage + 1, n_design)
-                        The design variables from 0-th up to stage-th 
-                        experiments.
-                    * ys : np.ndarray of size (n_traj or 1, stage + 1, n_obs)
-                        The observations from 0-th up to stage-th experiments.
-                and the output is 
-                    * numpy.ndarray of size (n_traj or 1, n_xp)
-                Note that the update of belief state is realized in this class, 
-                and does not need to be provided by users.
-    post_approx : class, optional(default=None)
-        User-provided posterior approximator for variational estimator.
-        ==================================================================
-    use_grid_kld : bool, optional(default=False)
-        ==================================================================
-    n_grid : int, optional(default=50)
-        Number of grid points to discretize each dimension of parameter space
-        to store the belief state if use_grid_kld is True. Using grid 
-        discretization is only practical when the dimension is smaller than 5. 
-    param_bounds : list, tuple or numpy.ndarray of size (n_param, 2), 
-                   optional(default=None)
-        ================================================================== 
-    post_rvs_method : str, optional(default="MCMC")
-        Method to sample from the posterior, including:
-            * "MCMC", Markov chain Monte Carlo via emcee.
-            * "Rejection", rejection sampling, only allowed for 1D parameter.
-    random_state : int, optional(default=None)
-        It is used as the random seed.        
-
-    Methods
-    -------
-    check_grid(),
-        Check if using grids to compute KL divergence is applicable. 
-    prior_logpdf(), prior_pdf()
-        Evaluate the prior logpdf (pdf) of parameter samples.
-    prior_rvs()
-        Generate samples from the prior.
-    post_logpdf(), post_pdf()
-        Evaluate the posterior logpdf (pdf) of parameter samples.
-    post_rvs()
-        Generate samples from the posterior.
-    xb_f()
-        Update the belief state with a single observation and design.
-    get_xb()
-        Update the belief state with a sequence of observations and designs.
-    get_xps()
-        Update the physical state with sequences of observations and designs.
-    get_reward()
-        Get the reward at a given stage with given state, design and 
-        observation.
-    get_total_reward()
-        Get the total reward give a sequence of designs and observations.
-
-    Future work
-    -----------
-    Let users provide their own prior sample generator and prior PDF evaluator.
-    Let users provide more complex constraints on design variables.
-    Let users provide their own measurement noise function.
-    Consider random initial physical state.
-    Use underscore to make variables not directly accessible by users, like
-    "self._n_stage", and use @property to make it indirectly accessible.
-    """
     def __init__(self, 
                  n_stage, n_param, n_design, n_obs, 
                  model, prior, design_bounds,
@@ -187,18 +24,11 @@ class VSOED(object):
                "n_obs should be an integer greater than 0.")
         self.n_obs = n_obs
         
-        # assert callable(model_fun), (
-        #        "model_fun should be a function.")
-        
         self.model = model
         self.m_f = model.model
         self.model_fun = self.m_f
         self.loglikeli = model.loglikeli
 
-        # self.prior_logpdf = prior.logpdf
-        # def prior_pdf(x):
-        #     return torch.exp(prior.logpdf(x))
-        # self.prior_pdf = prior_pdf
         self.prior = prior
         self.prior_rvs = prior.rvs
 
@@ -267,34 +97,30 @@ class VSOED(object):
                     xps_hist=None, params=None,
                     include_kld_rewards=True):
         """
-        A function to compute rewards of sequences at given "stage", with belief 
-        states "xbs", physical states "xps", designs 'ds' and observations 'ys'.
+        A function to compute rewards of sequences.
 
         Parameters
         ----------
         stage : int, optional(default=0)
             The stage index. 0 <= stage <= n_stage.
-        xbs : numpy.ndarray of size (n_traj or 1, n_grid ** n_param, 
-              n_param + 1), optional(default=None)
-            The belief states at stage "stage". 
-        xps : numpy.ndarray of size (n_traj or 1, n_phys_state), 
-              optional(default=None)
-            The physical states at stage "stage".
-        ds_hist : numpy.ndarray of size (n_traj or 1, n_stage, n_design), 
+        ds_hist : torch.Tensor of size (n_traj, n_stage, n_design), 
                   optional(default=None)
             The design variable histories.
-        ys_hist : numpy.ndarray of size (n_traj or 1, n_stage, n_obs), 
+        ys_hist : torch.Tensor of size (n_traj, n_stage, n_obs), 
                   optional(default=None)
             The observation histories. 
-        params : numpy.ndarray of size (n_traj or 1, n_param),
+        xps_hist : torch.Tensor of size (n_traj, n_stage + 1, n_phys_state), 
+              optional(default=None)
+            The physical state histories.
+        params : torch.Tensor of size (n_traj, n_param),
              optional(default=None)
             The true underlying parameters.
-        use_grid_kld : bool, optional(default=None)
-            Whether use grids to compute KL divergence.
+        include_kld_rewards : bool, optional(default=None)
+            Whether to include information-gain rewards.
 
         Returns
         -------
-        A numpy.ndarray of size n_traj or 1 which are the rewards.
+        A torch.Tensor which are the rewards.
         """
         assert stage >= 0 and stage <= self.n_stage
         nkld_rewards = self.nkld_rw_f(stage, ds_hist, ys_hist, xps_hist, params)
