@@ -3,12 +3,31 @@ Policy gradient (PG) based variational sequential optimal experimental design (v
 
 
 # Installation
-The code was tested in Python 3.9.7. GPU acceleration is highly recommended.
-Use `venv` to install:
+The code was tested in Python 3.9.7 on Linux and 3.10.0 on Windows 10. GPU acceleration is highly recommended.
+First create and activate a virtual environment:
 ```
 python -m venv vsOED_env
-source vsOED_env/bin/activate
-pip install -r requirements.txt
+source vsOED_env/bin/activate (for Linux)
+.\vsOED_env\Scripts\activate (for Windows)
+```
+Then install the required packages:
+```
+pip install -r requirements.txt --no-cache-dir
+```
+If your installed `torch` is the CPU version instead of the CUDA version, explicitly install the CUDA version by
+```
+pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+```
+
+You are now ready to run the following experimental commands in the root folder of the vsOED project.
+If you encounter a ModuleNotFound error, please add the root folder to your system's PATH or create a symbolic link.
+To create a symbolic link in Linux, run:
+```
+ln -s {path_to_vsOED_project}/vsOED {path_to_vsOED_project}/experiments/
+```
+In Windows 10, run the following command as an administrator:
+```
+mklink /D {path_to_vsOED_project}\experiments\vsOED {path_to_vsOED_project}\vsOED
 ```
 
 # Source location finding experiment (uni-model)

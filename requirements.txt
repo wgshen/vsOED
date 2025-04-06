@@ -1,8 +1,8 @@
-numpy==1.19.5
-tqdm==4.54.1
-torch==2.0.0 
-matplotlib==3.3.4
-scipy==1.5.4
-joblib==1.1.0
-dowel==0.0.3
-torchsde==0.2.5
+numpy==2.0.2
+tqdm==4.67.1
+torch --index-url https://download.pytorch.org/whl/cu118
+matplotlib==3.9.4
+scipy==1.13.1
+joblib==1.4.2
+dowel==0.0.4
+torchsde==0.2.6
